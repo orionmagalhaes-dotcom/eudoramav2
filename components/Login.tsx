@@ -1,0 +1,431 @@
+
+import React, { useState } from 'react';
+import { User } from '../types';
+import { checkUserStatus, loginWithPassword, registerClientPassword } from '../services/clientService';
+import { Loader2, Lock, AlertCircle, UserCheck, Shield, Sparkles, Play, ChevronRight, Star, ArrowRight, Eye, EyeOff, ShieldCheck, Check } from 'lucide-react';
+
+interface LoginProps {
+  onLogin: (user: User, remember: boolean) => void;
+  onAdminClick: () => void;
+  onAdminLoginSuccess?: (remember: boolean) => void;
+}
+
+// --- TEMA E DESIGN SYSTEM (OTIMIZADO: SEM BLUR, CORES CLARAS) ---
+interface Theme {
+    name: string;
+    bgClass: string;
+    cardClass: string;
+    textClass: string;
+    subTextClass: string;
+    inputContainerClass: string;
+    inputTextClass: string;
+    inputPlaceholderClass: string;
+    buttonClass: string;
+    iconColor: string;
+    accentColor: string;
+    bgElement?: React.ReactNode;
+}
+
+const THEMES: Theme[] = [
+    {
+        name: "Original Aura (Light)",
+        bgClass: "bg-gradient-to-br from-pink-100 via-purple-100 to-indigo-100", 
+        cardClass: "bg-white border border-pink-200 shadow-xl", 
+        textClass: "text-gray-800", 
+        subTextClass: "text-pink-600",
+        inputContainerClass: "bg-pink-50 border border-pink-200 focus-within:border-pink-400 focus-within:bg-white",
+        inputTextClass: "text-gray-900",
+        inputPlaceholderClass: "placeholder-pink-300",
+        buttonClass: "bg-pink-500 hover:bg-pink-600 text-white shadow-pink-200",
+        iconColor: "text-pink-500",
+        accentColor: "text-pink-600",
+        bgElement: (
+          <div className="absolute inset-0 overflow-hidden pointer-events-none">
+              <div className="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-pink-200 rounded-full opacity-40"></div>
+              <div className="absolute top-[60%] -right-[10%] w-[30%] h-[30%] bg-purple-200 rounded-full opacity-40"></div>
+          </div>
+        )
+    }
+];
+
+const Login: React.FC<LoginProps> = ({ onLogin, onAdminClick, onAdminLoginSuccess }) => {
+  const [step, setStep] = useState<'identify' | 'select_account' | 'password' | 'create_password'>('identify');
+  
+  // User Login State
+  const [digits, setDigits] = useState('');
+  const [fullPhoneFound, setFullPhoneFound] = useState('');
+  const [foundProfile, setFoundProfile] = useState<{name?: string, photo?: string} | null>(null);
+  
+  // Multiple Matches State
+  const [multipleMatches, setMultipleMatches] = useState<{ phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[]>([]);
+
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false); // Toggle visibility
+  const [keepConnected, setKeepConnected] = useState(true); // Default true
+
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  // Tema fixo (Padrão Claro)
+  const theme = THEMES[0];
+
+  // --- HANDLERS ---
+  
+  const handleDigitsChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = e.target.value.replace(/\D/g, '').slice(0, 4);
+      setDigits(val);
+      if (error) setError('');
+  };
+
+  const handleIdentify = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    
+    if (digits === '0000') {
+        onAdminClick();
+        return;
+    }
+
+    if (digits.length < 4) {
+      setError('Preencha os 4 dígitos finais.');
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+        const status = await checkUserStatus(digits);
+
+        if (status.exists && status.matches && status.matches.length > 0) {
+            
+            if (status.matches.length > 1) {
+                // MÚLTIPLAS CONTAS ENCONTRADAS
+                setMultipleMatches(status.matches);
+                setStep('select_account');
+            } else {
+                // APENAS UMA CONTA (Fluxo Padrão)
+                const match = status.matches[0];
+                setFullPhoneFound(match.phoneNumber);
+                setFoundProfile({ name: match.name, photo: match.photo });
+
+                if (match.hasPassword) {
+                    setStep('password');
+                } else {
+                    setStep('create_password');
+                }
+            }
+        } else {
+            setError('Conta não encontrada.');
+        }
+    } catch (err) {
+        setError('Erro de conexão.');
+    } finally {
+        setLoading(false);
+    }
+  };
+
+  const handleSelectAccount = (match: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }) => {
+      setFullPhoneFound(match.phoneNumber);
+      setFoundProfile({ name: match.name, photo: match.photo });
+      
+      // Reseta senha ao trocar seleção
+      setPassword('');
+      setError('');
+
+      // Envia para criar ou digitar senha com base no status dessa conta específica
+      if (match.hasPassword) {
+          setStep('password');
+      } else {
+          setStep('create_password');
+      }
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!password.trim()) { setError('Digite a senha.'); return; }
+    setLoading(true);
+    
+    const { user, error: loginError } = await loginWithPassword(fullPhoneFound, password);
+    setLoading(false);
+    
+    if (user) {
+        onLogin(user, keepConnected);
+    } else {
+        setError(loginError || 'Senha incorreta.');
+    }
+  };
+
+  const handleRegisterPassword = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setError('');
+      if (password.length < 4) { setError('Mínimo 4 dígitos.'); return; }
+      setLoading(true);
+      const success = await registerClientPassword(fullPhoneFound, password);
+      if (success) {
+          const { user } = await loginWithPassword(fullPhoneFound, password);
+          setLoading(false);
+          if (user) onLogin(user, keepConnected);
+          else setError('Erro ao entrar.');
+      } else {
+          setLoading(false);
+          setError('Erro ao salvar.');
+      }
+  };
+
+  const formatPhoneNumber = (phone: string) => {
+      // Formato Simples para Exibição: (XX) XXXXX-XXXX
+      const cleaned = phone.replace(/\D/g, '');
+      if (cleaned.length === 11) {
+          return `(${cleaned.slice(0, 2)}) ${cleaned.slice(2, 7)}-${cleaned.slice(7)}`;
+      }
+      return phone;
+  };
+
+  // --- RENDERIZAR TELA DE LOGIN COM TEMA ---
+  return (
+    <div className={`min-h-screen flex flex-col items-center justify-center font-sans px-4 relative overflow-hidden transition-all duration-700 ${theme.bgClass}`}>
+      
+      {/* BACKGROUND ELEMENTS (Custom per theme) */}
+      {theme.bgElement}
+
+      {/* --- ADMIN LINK (TOP LEFT) --- */}
+      <div className="absolute top-4 left-4 z-50">
+          <button 
+            onClick={onAdminClick}
+            className={`text-xs font-bold uppercase tracking-widest flex items-center gap-1 transition-all px-3 py-2 rounded-full opacity-60 hover:opacity-100 hover:bg-white/20 ${theme.subTextClass}`}
+          >
+            <Shield className="w-3 h-3" /> Área Restrita
+          </button>
+      </div>
+
+      <div className={`w-full max-w-sm p-8 animate-fade-in-up relative z-10 transition-all duration-500 ${theme.cardClass} rounded-[2.5rem]`}>
+        
+        {/* LOGO AREA */}
+        <div className="text-center pt-2 mb-6">
+            <div className="flex items-center justify-center gap-2 mb-2">
+                <div className={`p-2.5 rounded-xl shadow-md animate-bounce ${theme.iconColor.includes('text-white') ? 'bg-white/20' : 'bg-current/10'} ${theme.iconColor}`}>
+                    <Play className="w-6 h-6 fill-current" />
+                </div>
+                <h1 className={`text-3xl font-black tracking-tighter drop-shadow-sm ${theme.textClass}`}>
+                    Eu<span className={theme.accentColor.replace('text-', 'text-opacity-90 text-')}>Dorama</span>
+                </h1>
+            </div>
+            <p className={`text-sm font-bold tracking-widest uppercase flex items-center justify-center gap-1 opacity-80 ${theme.subTextClass}`}>
+                <Sparkles className="w-3 h-3" /> Clube de Assinantes
+            </p>
+        </div>
+
+        {step === 'identify' && (
+            <form onSubmit={handleIdentify} className="space-y-6">
+                
+                <div className="space-y-4">
+                    <div className="text-center space-y-1">
+                        <label className={`text-lg font-bold block leading-tight ${theme.textClass}`}>
+                            Use os 4 últimos dígitos do seu WhatsApp
+                        </label>
+                        <p className={`text-sm font-bold opacity-100 ${theme.subTextClass}`}>
+                            Ex: Se seu número é (88) 99999-<b>1234</b>, digite <b>1234</b>
+                        </p>
+                    </div>
+                    
+                    {/* INPUT COM MÁSCARA FIXA VISUAL (FONTE REDUZIDA E COMPACTA) */}
+                    <div className={`rounded-2xl p-3 flex items-center justify-center relative group transition-all ${theme.inputContainerClass}`}>
+                        <span className={`text-xl font-bold tracking-widest select-none font-mono opacity-40 ${theme.inputTextClass}`}>
+                            (••) ••••• - 
+                        </span>
+                        <input
+                            type="tel"
+                            maxLength={4}
+                            placeholder="____"
+                            className={`w-16 bg-transparent text-center text-xl font-bold outline-none tracking-[0.2em] font-mono focus:placeholder-transparent ml-1 h-8 leading-none ${theme.inputTextClass} ${theme.inputPlaceholderClass}`}
+                            value={digits}
+                            onChange={handleDigitsChange}
+                            autoFocus
+                        />
+                    </div>
+                </div>
+
+                {error && (
+                    <div className="flex items-center justify-center gap-2 text-red-600 font-bold text-xs bg-red-50 border border-red-100 p-3 rounded-xl animate-pulse">
+                        <AlertCircle className="w-4 h-4" /> {error}
+                    </div>
+                )}
+
+                <div className="space-y-3">
+                    <button
+                        type="submit"
+                        disabled={loading || digits.length < 4}
+                        className={`w-full font-black py-4 rounded-xl shadow-lg transition-all active:scale-95 flex justify-center items-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed group ${theme.buttonClass}`}
+                    >
+                        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Continuar <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform"/></>}
+                    </button>
+                </div>
+
+            </form>
+        )}
+
+        {step === 'select_account' && (
+            <div className="space-y-6 animate-slide-up">
+                <div className="text-center">
+                    <h3 className={`text-lg font-bold ${theme.textClass}`}>Encontramos mais de um!</h3>
+                    <p className={`text-sm opacity-80 ${theme.textClass}`}>
+                        Qual destes números é o seu?
+                    </p>
+                </div>
+
+                <div className="space-y-3 max-h-60 overflow-y-auto pr-1 custom-scrollbar">
+                    {multipleMatches.map((match, idx) => (
+                        <button
+                            key={idx}
+                            onClick={() => handleSelectAccount(match)}
+                            className={`w-full p-4 rounded-xl text-left border transition-all active:scale-95 hover:shadow-md flex items-center justify-between group ${theme.inputContainerClass}`}
+                        >
+                            <div className="flex items-center gap-3">
+                                {match.photo ? (
+                                    <img src={match.photo} alt="User" className="w-10 h-10 rounded-full object-cover border border-gray-200" />
+                                ) : (
+                                    <div className={`w-10 h-10 rounded-full flex items-center justify-center bg-pink-100 text-pink-600`}>
+                                        <UserCheck className="w-5 h-5" />
+                                    </div>
+                                )}
+                                <div>
+                                    <p className={`font-bold font-mono text-sm ${theme.inputTextClass}`}>
+                                        {formatPhoneNumber(match.phoneNumber)}
+                                    </p>
+                                    <p className="text-xs text-gray-500 font-bold uppercase">
+                                        {match.name || 'Cliente'}
+                                    </p>
+                                </div>
+                            </div>
+                            <ArrowRight className="w-5 h-5 text-gray-400 group-hover:text-pink-500 transition-colors" />
+                        </button>
+                    ))}
+                </div>
+
+                <button 
+                    type="button" 
+                    onClick={() => { setStep('identify'); setDigits(''); setError(''); setMultipleMatches([]); }}
+                    className={`w-full font-bold text-xs py-3 rounded-xl transition-all hover:bg-gray-100 ${theme.subTextClass}`}
+                >
+                    Voltar / Nenhum destes
+                </button>
+            </div>
+        )}
+
+        {(step === 'password' || step === 'create_password') && (
+            <form onSubmit={step === 'password' ? handleLoginSubmit : handleRegisterPassword} className="space-y-6 animate-slide-up">
+                
+                <div className={`text-center p-4 rounded-xl border ${theme.inputContainerClass}`}>
+                    {/* ... (Profile section) ... */}
+                    {foundProfile?.photo ? (
+                        <div className="w-20 h-20 rounded-full mx-auto mb-3 border-4 border-white/50 shadow-lg overflow-hidden">
+                            <img src={foundProfile.photo} alt="Profile" className="w-full h-full object-cover" />
+                        </div>
+                    ) : (
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-2 opacity-20 bg-current ${theme.iconColor}`}>
+                            <UserCheck className="w-6 h-6" />
+                        </div>
+                    )}
+
+                    <p className={`text-xs font-bold uppercase mb-1 opacity-60 ${theme.subTextClass}`}>Identificado como</p>
+                    {foundProfile?.name ? (
+                        <p className={`font-black text-xl tracking-tight ${theme.textClass}`}>{foundProfile.name}</p>
+                    ) : (
+                        <p className={`font-bold text-lg tracking-widest font-mono ${theme.textClass}`}>••• •••• {fullPhoneFound.slice(-4)}</p>
+                    )}
+                </div>
+
+                <div className={`rounded-xl p-4 transition-all ${theme.inputContainerClass}`}>
+                    <label className={`block text-xs font-bold uppercase mb-2 ml-1 opacity-70 ${theme.subTextClass}`}>
+                        {step === 'create_password' ? 'Crie sua senha' : 'Sua senha'}
+                    </label>
+                    <div className="flex items-center relative">
+                        <Lock className={`w-5 h-5 mr-3 ml-1 opacity-50 ${theme.iconColor}`} />
+                        <input
+                            type={showPassword ? "text" : "password"}
+                            className={`w-full bg-transparent font-bold text-xl outline-none ${theme.inputTextClass} ${theme.inputPlaceholderClass} pr-8`}
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                            autoFocus
+                            placeholder="******"
+                        />
+                        <button 
+                            type="button" 
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-0 text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                            {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                        </button>
+                    </div>
+                </div>
+
+                {/* CHECKBOX PERMANECER CONECTADO */}
+                <div className="flex items-center justify-center py-1">
+                    <label className="flex items-center gap-3 cursor-pointer group bg-gray-50 px-4 py-2 rounded-full border border-gray-100 hover:bg-gray-100 transition-colors">
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${keepConnected ? 'bg-pink-500 border-pink-500' : 'bg-white border-gray-300 group-hover:border-pink-300'}`}>
+                            {keepConnected && <Check className="w-3 h-3 text-white" />}
+                        </div>
+                        <input 
+                            type="checkbox" 
+                            className="hidden" 
+                            checked={keepConnected} 
+                            onChange={(e) => setKeepConnected(e.target.checked)} 
+                        />
+                        <span className={`text-sm font-bold text-gray-600 select-none`}>Permanecer conectado</span>
+                    </label>
+                </div>
+
+                {error && (
+                    <div className="bg-red-50 border border-red-100 p-3 rounded-xl">
+                        <p className="text-red-600 font-bold text-center text-xs">{error}</p>
+                    </div>
+                )}
+
+                <div className="flex flex-col gap-3">
+                    <button
+                        type="submit"
+                        disabled={loading}
+                        className={`w-full font-black py-4 rounded-xl shadow-lg transition-transform active:scale-95 flex justify-center items-center gap-2 ${theme.buttonClass}`}
+                    >
+                        {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : (step === 'create_password' ? 'Definir Senha e Entrar' : <>Acessar Painel <UserCheck className="w-4 h-4"/></>)}
+                    </button>
+                    <button 
+                        type="button" 
+                        onClick={() => { setStep('identify'); setDigits(''); setPassword(''); setError(''); setFoundProfile(null); setMultipleMatches([]); setShowPassword(false); }}
+                        className={`font-bold text-xs py-2 transition-colors hover:underline opacity-70 hover:opacity-100 ${theme.subTextClass}`}
+                    >
+                        Não sou este número
+                    </button>
+                </div>
+            </form>
+        )}
+
+        {/* SECURITY FOOTER - GOOGLE PARTNERSHIP */}
+        <div className="mt-8 pt-6 border-t border-gray-100 flex flex-col items-center gap-3">
+            <div className="flex items-center gap-2 text-xs text-green-700 font-bold bg-green-50 px-3 py-1 rounded-full border border-green-100">
+                <ShieldCheck className="w-4 h-4" />
+                <span>Site Seguro & Verificado</span>
+            </div>
+            
+            <div className="flex items-center gap-3 opacity-80 hover:opacity-100 transition-opacity">
+                 {/* Google G Logo SVG */}
+                 <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M23.5 12.2857C23.5 11.4429 23.425 10.725 23.2857 10H12V14.5143H18.5214C18.2536 15.9857 17.3643 17.25 16.0393 18.1321V21.1036H19.9214C22.2036 19.0107 23.5 15.925 23.5 12.2857Z" fill="#4285F4"/>
+                    <path d="M12 24C15.2357 24 17.95 22.925 19.925 21.1036L16.0429 18.1321C14.9607 18.8679 13.5929 19.2857 12 19.2857C8.85714 19.2857 6.19643 17.1643 5.23929 14.2821H1.22143V17.3964C3.20357 21.3321 7.27143 24 12 24Z" fill="#34A853"/>
+                    <path d="M5.23929 14.2821C4.99286 13.5429 4.85714 12.7786 4.85714 12C4.85714 11.2214 4.99286 10.4571 5.23929 9.71786V6.60358H1.22143C0.442857 8.16786 0 9.975 0 12C0 14.025 0.442857 15.8321 1.22143 17.3964L5.23929 14.2821Z" fill="#FBBC05"/>
+                    <path d="M12 4.71429C13.7643 4.71429 15.3393 5.31786 16.5857 6.50714L19.9929 3.1C17.9464 1.19286 15.2321 0 12 0C7.27143 0 3.20357 2.66786 1.22143 6.60358L5.23929 9.71786C6.19643 6.83571 8.85714 4.71429 12 4.71429Z" fill="#EA4335"/>
+                 </svg>
+                 <div className="flex flex-col">
+                    <span className="text-[10px] font-bold text-gray-500 leading-none">Parceria com Google</span>
+                    <span className="text-[9px] font-medium text-gray-400 leading-none mt-0.5">Referência no Mercado Digital</span>
+                 </div>
+            </div>
+        </div>
+
+      </div>
+    </div>
+  );
+};
+
+export default Login;
