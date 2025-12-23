@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
@@ -472,8 +471,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       <div className="pt-4 space-y-5">
                           <p className="text-xs font-black uppercase text-indigo-400 tracking-widest border-b-2 border-indigo-50 pb-2">Gerenciar Assinaturas</p>
                           <div className="space-y-4">
-                              {/* Fix: Explicitly cast to string[] to ensure map exists on normalized result */}
-                              {(normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months) as string[]).map((sub: string, i: number) => {
+                              {/* Fix: Directly use the result of normalizeSubscriptions which is typed to return string[] */}
+                              {normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months).map((sub: string, i: number) => {
                                   const parts = sub.split('|');
                                   const serviceName = parts[0];
                                   const startDate = parts[1];

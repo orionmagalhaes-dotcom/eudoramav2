@@ -4,7 +4,7 @@ import { getAssignedCredential } from '../services/credentialService';
 import { getAllClients, updateClientName, updateClientPreferences } from '../services/clientService';
 import { 
   Copy, Check, CreditCard, Star, Crown, Sparkles, Loader2, 
-  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2
+  RotateCw, Key, Smartphone, Mail, Lock, AlertTriangle, PlusCircle, ArrowRight, Edit3, Fingerprint, ShieldAlert, Palette, Camera, X, CheckCircle2, Upload, Trash2, Clock
 } from 'lucide-react';
 
 interface DashboardProps {
@@ -24,15 +24,6 @@ const THEME_OPTIONS = [
     { name: 'Menta', color: 'bg-emerald-50', value: 'emerald' },
     { name: 'Âmbar', color: 'bg-amber-50', value: 'amber' },
     { name: 'Noite', color: 'bg-slate-900', value: 'dark' },
-];
-
-const ALL_POSSIBLE_SERVICES = [
-    { name: 'Viki Pass', price: '19,90', color: 'from-blue-500 to-indigo-600', icon: '💎' },
-    { name: 'Kocowa+', price: '14,90', color: 'from-pink-500 to-rose-600', icon: '✨' },
-    { name: 'IQIYI', price: '14,90', color: 'from-emerald-400 to-teal-600', icon: '🐉' },
-    { name: 'WeTV', price: '14,90', color: 'from-orange-400 to-red-500', icon: '🏹' },
-    { name: 'DramaBox', price: '14,90', color: 'from-purple-500 to-violet-700', icon: '🎬' },
-    { name: 'Youku', price: '14,90', color: 'from-cyan-400 to-blue-500', icon: '🎋' }
 ];
 
 const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette, setShowPalette, onUpdateUser, syncTrigger = 0 }) => {
@@ -62,11 +53,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
   };
 
   const getTextColorClass = () => user.themeColor === 'dark' ? 'text-white' : 'text-gray-900';
-  const getSubTextColorClass = () => user.themeColor === 'dark' ? 'text-slate-400' : 'text-gray-400';
 
   useEffect(() => {
       const loadUnifiedData = async () => {
-          // Se já temos dados, não mostramos o loader agressivo de "Sincronizando"
           if (mergedData.length === 0) setLoading(true);
           
           const allClients = await getAllClients();
@@ -74,15 +63,22 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
               const name = raw.split('|')[0].trim();
               let details = user.subscriptionDetails ? user.subscriptionDetails[name] : null;
               
-              // AUDITORIA: Prioriza os dados específicos do mapa de assinaturas (processado pelo clientService)
               let purchaseDate = details ? new Date(details.purchaseDate) : new Date(user.purchaseDate);
               let duration = details ? (details.durationMonths || 1) : (user.durationMonths || 1);
               
               const expiryDate = new Date(purchaseDate);
               expiryDate.setMonth(purchaseDate.getMonth() + duration);
-              const daysLeft = Math.ceil((expiryDate.getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24));
+              
+              // Cálculo de dias restantes com base na data atual
+              const now = new Date();
+              now.setHours(0,0,0,0);
+              expiryDate.setHours(0,0,0,0);
+              const daysLeft = Math.ceil((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
               
               const result = await getAssignedCredential(user, name, allClients);
+              
+              // REGRA DE TOLERÂNCIA: Bloqueia (blur) apenas após 3 dias de vencimento (daysLeft < -3)
+              // ou se o administrador marcou como devedor manualmente.
               const isStrictlyBlocked = daysLeft < -3 && !user.overrideExpiration;
 
               return { 
@@ -100,7 +96,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
 
       if (validServices.length > 0) loadUnifiedData();
       else setLoading(false);
-  }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, syncTrigger]);
+  }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger]);
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -121,24 +117,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
       if (success) {
           onUpdateUser({ ...user, themeColor: colorValue });
       }
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      if (file.size > 1024 * 1024) {
-          alert("A imagem é muito grande! Escolha uma de até 1MB.");
-          return;
-      }
-      setUploading(true);
-      const reader = new FileReader();
-      reader.onloadend = async () => {
-          const base64String = reader.result as string;
-          const success = await updateClientPreferences(user.phoneNumber, { profile_image: base64String });
-          if (success) onUpdateUser({ ...user, profileImage: base64String });
-          setUploading(false);
-      };
-      reader.readAsDataURL(file);
   };
 
   return (
@@ -163,21 +141,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                           />
                       ))}
                   </div>
-              </div>
-          </div>
-      )}
-
-      {expiredServices.length > 0 && (
-          <div className="px-5 pt-6 animate-fade-in">
-              <div className="bg-gradient-to-r from-orange-500 to-red-600 rounded-[2rem] p-5 shadow-xl flex flex-col gap-4 border-2 border-white">
-                  <div className="flex items-center gap-3">
-                      <div className="bg-white/20 p-2.5 rounded-full"><ShieldAlert size={22} className="text-white" /></div>
-                      <div className="flex-1">
-                          <p className="text-xs font-black uppercase text-white tracking-widest leading-none">Atenção Necessária</p>
-                          <p className="text-[10px] font-bold text-white/90 mt-1 leading-tight">Vencimento detectado em suas assinaturas. Renove para não perder o acesso!</p>
-                      </div>
-                  </div>
-                  <button onClick={() => onOpenCheckout('renewal', expiredServices.map(s => s.name).join(','))} className="w-full bg-white text-red-600 py-3 rounded-xl text-xs font-black uppercase shadow-sm active:scale-95 transition-all">Renovar Agora</button>
               </div>
           </div>
       )}
@@ -213,13 +176,25 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
               <div className="grid grid-cols-1 gap-5">
                   {mergedData.map((item, i) => (
                     <div key={i} className={`bg-white rounded-[2.5rem] p-6 shadow-xl border relative overflow-hidden transition-all ${item.daysLeft < 0 ? 'border-red-100' : 'border-gray-100'}`}>
-                        <div className="flex justify-between items-start mb-6">
+                        {/* Status Banners Individuais */}
+                        {item.daysLeft <= 5 && item.daysLeft >= 0 && (
+                            <div className="absolute top-0 right-0 left-0 bg-yellow-400 py-1 text-center">
+                                <span className="text-[9px] font-black text-yellow-950 uppercase flex items-center justify-center gap-1"><Clock size={10}/> Vencimento Próximo!</span>
+                            </div>
+                        )}
+                        {item.daysLeft < 0 && (
+                            <div className={`absolute top-0 right-0 left-0 py-1 text-center ${item.daysLeft < -3 ? 'bg-red-600' : 'bg-orange-500'}`}>
+                                <span className="text-[9px] font-black text-white uppercase flex items-center justify-center gap-1"><AlertTriangle size={10}/> {item.daysLeft < -3 ? 'ACESSO SUSPENSO' : 'ASSINATURA VENCIDA'}</span>
+                            </div>
+                        )}
+
+                        <div className={`flex justify-between items-start mb-6 ${item.daysLeft <= 5 ? 'mt-4' : ''}`}>
                             <div className="flex items-center gap-4">
                                 <div className={`w-14 h-14 bg-gradient-to-br from-pink-500 to-purple-600 rounded-2xl flex items-center justify-center text-white font-black text-2xl shadow-lg ring-4 ring-pink-50`}>{item.name[0]}</div>
                                 <div>
                                     <h3 className="font-black text-gray-800 text-lg leading-none">{item.name}</h3>
                                     <span className={`inline-block px-2 py-0.5 mt-2 rounded-lg text-[10px] font-black uppercase ${item.daysLeft < 0 ? 'bg-red-100 text-red-600' : 'bg-green-100 text-green-700'}`}>
-                                        {item.daysLeft < 0 ? 'Vencido' : `${item.daysLeft} dias restantes`}
+                                        {item.daysLeft < 0 ? `Vencido há ${Math.abs(item.daysLeft)} dias` : `${item.daysLeft} dias restantes`}
                                     </span>
                                 </div>
                             </div>
@@ -229,23 +204,44 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
                                 </button>
                             )}
                         </div>
+                        
                         <div className="space-y-3">
+                            {/* Login Info */}
                             <div className="bg-gray-50 p-4 rounded-[1.5rem] border border-gray-100 flex justify-between items-center group">
                                 <div className="flex flex-col min-w-0 flex-1 text-gray-800">
                                     <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Login</span>
-                                    <span className={`font-mono font-bold text-sm break-all ${item.isBlocked ? 'text-red-300 blur-[2px]' : 'text-gray-700'}`}>{item.isBlocked ? 'BLOQUEADO' : (item.cred?.email || 'Aguarde...')}</span>
+                                    <span className={`font-mono font-bold text-sm break-all transition-all duration-500 ${item.isBlocked ? 'text-red-300 blur-[6px] select-none' : 'text-gray-700'}`}>
+                                        {item.isBlocked ? 'BLOQUEADO' : (item.cred?.email || 'Aguarde...')}
+                                    </span>
                                 </div>
                                 {!item.isBlocked && <button onClick={() => item.cred && copyToClipboard(item.cred.email, `e-${i}`)} className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"><Copy size={14}/><span className="text-[10px] font-black uppercase">Copiar</span></button>}
                             </div>
+                            
+                            {/* Password Info */}
                             <div className="bg-gray-50 p-4 rounded-[1.5rem] border border-gray-100 flex justify-between items-center group">
                                 <div className="flex flex-col min-w-0 flex-1 text-gray-800">
                                     <span className="text-[9px] font-black text-gray-400 uppercase tracking-widest mb-0.5">Senha</span>
-                                    <span className={`font-mono font-bold tracking-widest ${item.isBlocked ? 'text-red-300 blur-[2px]' : 'text-gray-700'}`}>{item.isBlocked ? '••••••••' : (item.cred?.password || '••••••')}</span>
+                                    <span className={`font-mono font-bold tracking-widest transition-all duration-500 ${item.isBlocked ? 'text-red-300 blur-[6px] select-none' : 'text-gray-700'}`}>
+                                        {item.isBlocked ? '••••••••' : (item.cred?.password || '••••••')}
+                                    </span>
                                 </div>
                                 {!item.isBlocked && <button onClick={() => item.cred && copyToClipboard(item.cred.password, `p-${i}`)} className="p-3 text-indigo-600 bg-white border border-gray-100 rounded-xl shadow-sm active:scale-90 flex items-center gap-1"><Copy size={14}/><span className="text-[10px] font-black uppercase">Copiar</span></button>}
                             </div>
                         </div>
-                        {item.isBlocked && <div className="mt-4 bg-red-50 p-4 rounded-2xl border border-red-100 flex items-center gap-3"><Lock className="text-red-500 shrink-0" size={18} /><p className="text-[10px] font-bold text-red-700 uppercase leading-tight">Acesso Suspenso. Regularize seu pagamento para liberar.</p></div>}
+
+                        {/* Alerta de Tolerância/Bloqueio */}
+                        {item.daysLeft < 0 && item.daysLeft >= -3 && !item.isBlocked && (
+                            <div className="mt-4 bg-orange-50 p-3 rounded-2xl border border-orange-100 flex items-center gap-3">
+                                <AlertTriangle className="text-orange-500 shrink-0" size={16} />
+                                <p className="text-[9px] font-bold text-orange-800 uppercase leading-tight">Período de Tolerância: Renove para não ter os dados ocultados em {4 + item.daysLeft} dias.</p>
+                            </div>
+                        )}
+                        {item.isBlocked && (
+                            <div className="mt-4 bg-red-50 p-4 rounded-2xl border border-red-100 flex items-center gap-3 animate-pulse">
+                                <Lock className="text-red-500 shrink-0" size={18} />
+                                <p className="text-[10px] font-bold text-red-700 uppercase leading-tight">Acesso Suspenso. Regularize seu pagamento para liberar as credenciais.</p>
+                            </div>
+                        )}
                     </div>
                   ))}
               </div>
