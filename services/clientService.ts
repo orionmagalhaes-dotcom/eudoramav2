@@ -102,7 +102,6 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
               const cleanService = parts[0].trim();
               const specificDate = parts[1] ? parts[1].trim() : null;
               const individualPaid = (parts[2] || '0') === '1'; 
-              // AUDITORIA: Prioriza a duração salva na string do plano
               const durationStr = parts[3] ? parts[3].trim() : '';
               const individualDuration = durationStr !== '' ? parseInt(durationStr) : (row.duration_months || 1);
               

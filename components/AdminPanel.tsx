@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
@@ -7,7 +8,7 @@ import {
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff, 
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
-    Sun, Moon
+    Sun, Moon, Fingerprint, Copy, Check
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -52,10 +53,6 @@ const toDateInput = (isoString: string) => {
     } catch(e) { return ''; }
 };
 
-/**
- * Normaliza as assinaturas para um formato padrão string[].
- * Garante que o retorno seja sempre string[] para evitar erros de tipo 'unknown'.
- */
 function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[] {
     let list: any[] = [];
     if (Array.isArray(subs)) {
@@ -69,7 +66,6 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
         else list = [cleaned];
     }
     
-    // Explicitly typed as string[] to ensure 'map' results in 'string[]'
     const result: string[] = (list || [])
         .map((s: any): string => {
             let str = String(s).trim().replace(/^"|"$/g, '');
@@ -78,7 +74,6 @@ function normalizeSubscriptions(subs: any, defaultDuration: number = 1): string[
             const name = parts[0] || 'Desconhecido';
             const date = parts[1] || new Date().toISOString();
             const status = parts[2] || '0'; 
-            // AUDITORIA: Prioriza o valor da string, depois o defaultDuration passado
             const duration = (parts[3] && parts[3].trim() !== '') ? parts[3] : String(defaultDuration || 1);
             return `${name}|${date}|${status}|${duration}`;
         });
@@ -117,7 +112,7 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
 };
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'danger'>('clients'); 
+  const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger'>('clients'); 
   const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
   const [darkMode, setDarkMode] = useState(false);
   const [credentials, setCredentials] = useState<AppCredential[]>([]);
@@ -125,6 +120,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [loading, setLoading] = useState(false);
   const [savingClient, setSavingClient] = useState(false);
   const [clientSearch, setClientSearch] = useState('');
+  const [loginSearchQuery, setLoginSearchQuery] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   
   const [credForm, setCredForm] = useState<Partial<AppCredential>>({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() });
   const [credSortOrder, setCredSortOrder] = useState<'asc' | 'desc'>('desc');
@@ -148,6 +145,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         setClients(allClients);
     } catch (e) { console.error(e); }
     setLoading(false);
+  };
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
 
   const credentialUsage = useMemo<Record<string, number>>(() => {
@@ -219,6 +222,61 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     return list;
   }, [clients, clientSearch, clientFilterStatus]);
 
+  // --- BUSCA DE LOGINS (FUZZY) ---
+  const loginSearchResults = useMemo(() => {
+    if (!loginSearchQuery || loginSearchQuery.length < 2) return [];
+    const query = loginSearchQuery.toLowerCase();
+    
+    // Filtra clientes pelo nome ou telefone
+    const matchedClients = clients.filter(c => 
+        !c.deleted && 
+        ((c.client_name?.toLowerCase().includes(query)) || (c.phone_number.includes(query)))
+    );
+
+    return matchedClients.map(client => {
+        const subs = normalizeSubscriptions(client.subscriptions || [], client.duration_months);
+        
+        const subAccesses = subs.map(sub => {
+            const parts = sub.split('|');
+            const serviceName = parts[0].trim();
+            const serviceLower = serviceName.toLowerCase();
+            const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
+            const daysLeft = getDaysRemaining(expiry);
+
+            // Descobrir qual credencial este cliente está usando para este serviço
+            const serviceCreds = credentials
+                .filter(c => c.isVisible && c.service.toLowerCase().includes(serviceLower))
+                .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
+
+            let assignedLogin = "Não vinculada";
+            if (serviceCreds.length > 0) {
+                const clientsForThisService = clients
+                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
+                    .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
+                
+                const rank = clientsForThisService.findIndex(c => c.id === client.id);
+                if (rank !== -1) {
+                    const credIndex = rank % serviceCreds.length;
+                    assignedLogin = serviceCreds[credIndex].email;
+                }
+            }
+
+            return {
+                serviceName,
+                login: assignedLogin,
+                daysLeft,
+                isExpired: daysLeft < 0
+            };
+        });
+
+        return {
+            clientName: client.client_name || "Sem Nome",
+            phoneNumber: client.phone_number,
+            accesses: subAccesses
+        };
+    });
+  }, [clients, credentials, loginSearchQuery]);
+
   const handleSaveClient = async () => {
     if (!clientForm.phone_number) return;
     setSavingClient(true);
@@ -254,11 +312,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const oldStartDate = parts[1];
     const months = parseInt(parts[3] || '1');
     
-    // Calcula a expiração atual
     const currentExpiry = calculateExpiry(oldStartDate, months);
     const today = new Date();
     
-    // Se já venceu, começa a contar de hoje. Se ainda é válido, começa a contar da expiração atual.
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
     
     subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|1|${months}`;
@@ -301,11 +357,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
           <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl shadow-sm border border-indigo-100 dark:border-slate-800">
               {[
                   {id: 'clients', icon: Users, label: 'Clientes'},
+                  {id: 'buscar_login', icon: Search, label: 'Buscar Login'},
                   {id: 'credentials', icon: Key, label: 'Contas'},
                   {id: 'danger', icon: AlertTriangle, label: 'Segurança'}
               ].map(tab => (
-                  <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 py-3 px-4 rounded-xl text-xs font-black uppercase transition-all flex items-center justify-center gap-2 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>
-                      <tab.icon size={16} /> {tab.label}
+                  <button key={tab.id} onClick={() => setActiveTab(tab.id as any)} className={`flex-1 py-3 px-4 rounded-xl text-[10px] font-black uppercase transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 ${activeTab === tab.id ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>
+                      <tab.icon size={16} /> <span className="hidden sm:inline">{tab.label}</span>
                   </button>
               ))}
           </div>
@@ -334,7 +391,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {filteredClients.map((client) => (
-                          <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 transition-all">
+                          <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 transition-all">
                               <div className="flex justify-between items-start mb-4">
                                   <div className="min-w-0">
                                       <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
@@ -344,7 +401,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                               </div>
                               
                               <div className="space-y-3 mb-4">
-                                  {normalizeSubscriptions(client.subscriptions || [], client.duration_months).map((sub, i) => {
+                                  {(normalizeSubscriptions(client.subscriptions || [], client.duration_months) as string[]).map((sub, i) => {
                                       const parts = sub.split('|');
                                       const serviceName = parts[0];
                                       const expiry = calculateExpiry(parts[1], parseInt(parts[3] || '1'));
@@ -399,6 +456,91 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
               </div>
           )}
 
+          {activeTab === 'buscar_login' && (
+              <div className="space-y-6 animate-fade-in pb-32">
+                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] shadow-sm border border-indigo-100 dark:border-slate-800 space-y-6">
+                      <div className="flex flex-col gap-2">
+                        <h2 className="text-2xl font-black text-gray-900 dark:text-white">Buscar Acessos</h2>
+                        <p className="text-sm text-indigo-400 font-bold uppercase tracking-widest">Localize logins de assinaturas por cliente</p>
+                      </div>
+
+                      <div className="relative group">
+                          <div className="absolute inset-y-0 left-0 pl-5 flex items-center pointer-events-none">
+                              <Search className="text-indigo-400 group-focus-within:text-indigo-600 transition-colors" size={24} />
+                          </div>
+                          <input 
+                            className="w-full bg-indigo-50 dark:bg-slate-800 pl-14 pr-5 py-5 rounded-2xl font-black text-lg outline-none border-2 border-transparent focus:border-indigo-600 transition-all shadow-inner" 
+                            placeholder="Nome ou WhatsApp do cliente..." 
+                            value={loginSearchQuery} 
+                            onChange={e => setLoginSearchQuery(e.target.value)} 
+                          />
+                      </div>
+                  </div>
+
+                  <div className="space-y-4">
+                      {loginSearchResults.length === 0 && loginSearchQuery.length >= 2 ? (
+                          <div className="text-center py-20 bg-white/50 rounded-3xl border border-dashed border-indigo-200">
+                             <Fingerprint className="mx-auto w-16 h-16 text-indigo-200 mb-4" />
+                             <p className="text-indigo-400 font-black uppercase tracking-tighter">Nenhum cliente encontrado</p>
+                          </div>
+                      ) : (
+                        loginSearchResults.map((res, i) => (
+                            <div key={i} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-100 dark:border-slate-800 animate-slide-up">
+                                <div className="flex justify-between items-center mb-6 px-2">
+                                    <div>
+                                        <h4 className="font-black text-xl text-gray-900 dark:text-white leading-none">{res.clientName}</h4>
+                                        <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12}/> {res.phoneNumber}</p>
+                                    </div>
+                                    <div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest">
+                                        {res.accesses.length} Assinaturas
+                                    </div>
+                                </div>
+
+                                <div className="overflow-x-auto">
+                                    <table className="w-full text-left border-separate border-spacing-y-2">
+                                        <thead>
+                                            <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
+                                                <th className="px-4 py-2">Aplicativo</th>
+                                                <th className="px-4 py-2">Status</th>
+                                                <th className="px-4 py-2">E-mail de Acesso</th>
+                                                <th className="px-4 py-2 text-right">Ação</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {res.accesses.map((acc, idx) => (
+                                                <tr key={idx} className={`group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors ${acc.isExpired ? 'opacity-60' : ''}`}>
+                                                    <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50">
+                                                        <span className="font-black text-sm text-gray-800 dark:text-gray-200">{acc.serviceName}</span>
+                                                    </td>
+                                                    <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50">
+                                                        <span className={`px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border ${acc.isExpired ? 'bg-red-50 text-red-600 border-red-100' : 'bg-green-50 text-green-700 border-green-100'}`}>
+                                                            {acc.isExpired ? 'Expirada' : 'Ativa'}
+                                                        </span>
+                                                    </td>
+                                                    <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50">
+                                                        <span className="font-mono text-xs font-bold text-indigo-600 dark:text-indigo-400">{acc.login}</span>
+                                                    </td>
+                                                    <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right">
+                                                        <button 
+                                                            onClick={() => copyToClipboard(acc.login, `copy-login-${i}-${idx}`)}
+                                                            className="p-2 hover:bg-white rounded-lg transition-all text-indigo-400 hover:text-indigo-600 shadow-sm"
+                                                            title="Copiar Login"
+                                                        >
+                                                            {copiedId === `copy-login-${i}-${idx}` ? <Check size={16} className="text-green-500" /> : <Copy size={16} />}
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        ))
+                      )}
+                  </div>
+              </div>
+          )}
+
           {activeTab === 'credentials' && (
               <div className="space-y-6 animate-fade-in pb-32">
                   <div className="flex justify-between items-center px-2">
@@ -410,7 +552,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                         <div key={serviceName} className="space-y-4">
                             <h4 className="text-xs font-black text-indigo-400 uppercase tracking-widest px-2">{serviceName}</h4>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {creds.map(c => {
+                                {(creds as AppCredential[]).map(c => {
                                     const count = credentialUsage[c.id] || 0;
                                     const health = getCredentialHealth(c.service, c.publishedAt, count);
                                     return (
@@ -471,8 +613,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       <div className="pt-4 space-y-5">
                           <p className="text-xs font-black uppercase text-indigo-400 tracking-widest border-b-2 border-indigo-50 pb-2">Gerenciar Assinaturas</p>
                           <div className="space-y-4">
-                              {/* Fix: Directly use the result of normalizeSubscriptions which is typed to return string[] */}
-                              {normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months).map((sub: string, i: number) => {
+                              {(normalizeSubscriptions(clientForm.subscriptions, clientForm.duration_months) as string[]).map((sub, i) => {
                                   const parts = sub.split('|');
                                   const serviceName = parts[0];
                                   const startDate = parts[1];
