@@ -2,13 +2,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
-import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, supabase } from '../services/clientService';
+import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, deleteClientPermanently, supabase } from '../services/clientService';
 import { 
     Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key, 
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff, 
     Calendar, Download, Upload, Shield, LayoutGrid, SortAsc, SortDesc, RotateCw, 
     ShieldCheck, UsersRound, ArrowUpRight, ArrowDownRight, DollarSign, MessageCircle,
-    Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2
+    Sun, Moon, Fingerprint, Copy, Check, Zap, BarChart3, TrendingUp, Wallet, PieChart, Undo2, TrendingDown, Settings2,
+    Activity, Banknote, CreditCard, Eraser, ListFilter, ArrowUpDown
 } from 'lucide-react';
 
 // --- PROPS INTERFACE ---
@@ -33,10 +34,10 @@ const CAPACITY_LIMITS: Record<string, number> = {
     'youku': 9999
 };
 
-// --- PREÇOS ---
 const getServicePrice = (serviceName: string, duration: number): number => {
-    if (duration > 1) return 50.00; // Planos trimestrais/semestrais/anuais
-    if (serviceName.toLowerCase().includes('viki')) return 20.00;
+    if (duration > 1) return 50.00; 
+    const s = serviceName.toLowerCase();
+    if (s.includes('viki')) return 20.00;
     return 15.00;
 };
 
@@ -120,7 +121,8 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash'>('clients'); 
-  const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
+  const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor' | 'deleted'>('all');
+  const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [credentials, setCredentials] = useState<AppCredential[]>([]);
   const [clients, setClients] = useState<ClientDBRow[]>([]);
@@ -130,6 +132,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [loginSearchQuery, setLoginSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   
+  // States para Finanças
+  const [projectionMonths, setProjectionMonths] = useState<number>(1);
+  const [statsReferenceDate, setStatsReferenceDate] = useState<number>(() => {
+      const d = new Date();
+      return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  });
+  const [isConfirmingReset, setIsConfirmingReset] = useState(false);
+
   const [credForm, setCredForm] = useState<Partial<AppCredential>>({ service: SERVICES[0], email: '', password: '', isVisible: true, publishedAt: new Date().toISOString() });
   const [credSortOrder, setCredSortOrder] = useState<'asc' | 'desc'>('desc');
   const [clientModalOpen, setClientModalOpen] = useState(false);
@@ -160,52 +170,62 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // --- LÓGICA FINANCEIRA ---
   const financeStats = useMemo(() => {
     const activeClients = clients.filter(c => !c.deleted);
+    const deletedClients = clients.filter(c => c.deleted);
     const totalClients = activeClients.length;
     
-    let grossRevenue = 0;
-    const serviceBreakdown: Record<string, { count: number, revenue: number, longTerm: number }> = {};
+    let grossRevenue = 0; 
+    let pendingRevenue = 0; 
+    const serviceBreakdown: Record<string, { count: number, monthlyCount: number, longTermCount: number, revenue: number, pending: number }> = {};
     
-    // Inicia breakdown
-    SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, revenue: 0, longTerm: 0 });
+    SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, longTermCount: 0, revenue: 0, pending: 0 });
 
     activeClients.forEach(client => {
         const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
         subs.forEach(sub => {
             const parts = sub.split('|');
             const sName = parts[0];
-            const isPaid = parts[2] === '1';
+            const startDate = parts[1];
             const duration = parseInt(parts[3] || '1');
+            const price = getServicePrice(sName, duration);
             
-            if (isPaid) {
-                const price = getServicePrice(sName, duration);
+            const expiry = calculateExpiry(startDate, duration);
+            const daysLeft = getDaysRemaining(expiry);
+
+            if (serviceBreakdown[sName]) {
                 grossRevenue += price;
-                
-                if (serviceBreakdown[sName]) {
-                    serviceBreakdown[sName].count++;
-                    serviceBreakdown[sName].revenue += price;
-                    if (duration > 1) serviceBreakdown[sName].longTerm++;
+                serviceBreakdown[sName].revenue += price;
+                serviceBreakdown[sName].count++;
+                if (duration > 1) serviceBreakdown[sName].longTermCount++;
+                else serviceBreakdown[sName].monthlyCount++;
+                if (daysLeft < 0) {
+                    pendingRevenue += price;
+                    serviceBreakdown[sName].pending += price;
                 }
             }
         });
     });
 
-    const now = new Date();
-    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const newClientsThisMonth = activeClients.filter(c => new Date(c.created_at) >= firstDayOfMonth).length;
-    const nextMonthProjection = grossRevenue * 1.05; 
+    const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
+    const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
+    
+    const churnRate = totalClients > 0 ? (churnSinceReset / (totalClients + churnSinceReset)) * 100 : 0;
+    const avgTicket = totalClients > 0 ? grossRevenue / totalClients : 0;
+    const projection = grossRevenue + (newClientsSinceReset * avgTicket * projectionMonths);
 
     return {
         grossRevenue,
+        pendingRevenue,
         totalClients,
-        newClientsThisMonth,
+        newClientsThisMonth: newClientsSinceReset,
+        churnCount: churnSinceReset,
+        churnRate,
         serviceBreakdown,
-        nextMonthProjection,
-        averageTicket: totalClients > 0 ? grossRevenue / totalClients : 0
+        projection,
+        averageTicket: avgTicket
     };
-  }, [clients]);
+  }, [clients, projectionMonths, statsReferenceDate]);
 
   const credentialUsage = useMemo<Record<string, number>>(() => {
     const usage: Record<string, number> = {};
@@ -220,7 +240,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 .sort((a, b) => new Date(a.publishedAt).getTime() - new Date(b.publishedAt).getTime());
             if (serviceCreds.length > 0) {
                 const clientsForService = clients
-                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => s.toLowerCase().includes(sName)))
+                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(sName)))
                     .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
                 const rank = clientsForService.findIndex(c => c.id === client.id);
                 if (rank !== -1) {
@@ -249,7 +269,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   }, [credentials, credSortOrder]);
 
   const filteredClients = useMemo<ClientDBRow[]>(() => {
-    let list = clients.filter(c => !c.deleted);
+    let list = clients.filter(c => clientFilterStatus === 'deleted' ? c.deleted : !c.deleted);
     
     if (clientFilterStatus === 'debtor') {
         list = list.filter(c => {
@@ -273,14 +293,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         const lower = clientSearch.toLowerCase();
         list = list.filter(c => c.phone_number.includes(lower) || c.client_name?.toLowerCase().includes(lower));
     }
-    return list;
-  }, [clients, clientSearch, clientFilterStatus]);
 
-  const deletedClients = useMemo(() => {
+    if (clientSortByExpiry) {
+        list = [...list].sort((a, b) => {
+            const getMinDays = (c: ClientDBRow) => {
+                const subs = normalizeSubscriptions(c.subscriptions, c.duration_months);
+                if (subs.length === 0) return 9999;
+                const days = subs.map(s => getDaysRemaining(calculateExpiry(s.split('|')[1], parseInt(s.split('|')[3] || '1'))));
+                return Math.min(...days);
+            };
+            return getMinDays(a) - getMinDays(b);
+        });
+    }
+
+    return list;
+  }, [clients, clientSearch, clientFilterStatus, clientSortByExpiry]);
+
+  const deletedClientsList = useMemo(() => {
       return clients.filter(c => c.deleted);
   }, [clients]);
 
-  // --- BUSCA DE LOGINS (FUZZY) ---
   const loginSearchResults = useMemo(() => {
     if (!loginSearchQuery || loginSearchQuery.length < 2) return [];
     const query = loginSearchQuery.toLowerCase();
@@ -304,7 +336,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
             let assignedLogin = "Não vinculada";
             if (serviceCreds.length > 0) {
                 const clientsForThisService = clients
-                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], c.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
+                    .filter(c => !c.deleted && normalizeSubscriptions(c.subscriptions || [], client.duration_months).some(s => s.toLowerCase().includes(serviceLower)))
                     .sort((a, b) => a.phone_number.localeCompare(b.phone_number));
                 const rank = clientsForThisService.findIndex(c => c.id === client.id);
                 if (rank !== -1) {
@@ -344,12 +376,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
       setLoading(false);
   };
 
-  const handlePermanentDelete = async (id: string) => {
-      if (!confirm("AVISO: Esta ação é irreversível. Excluir permanentemente do banco?")) return;
+  const handlePermanentDelete = async (id: string, phone: string) => {
+      if (!confirm(`ATENÇÃO: Deseja apagar PERMANENTEMENTE o cliente do número ${phone} direto no banco? Esta ação não pode ser desfeita.`)) return;
+      
       setLoading(true);
-      const { error } = await supabase.from('clients').delete().eq('id', id);
-      if (!error) loadData();
-      else alert("Erro ao excluir: " + error.message);
+      const { success, msg } = await deleteClientPermanently(id, phone);
+      
+      if (success) {
+          // Atualiza estado local removendo o item
+          setClients(prev => prev.filter(c => c.id !== id));
+      } else {
+          alert("Erro ao excluir no Supabase: " + msg);
+          loadData(); // Tenta recarregar para consistência
+      }
       setLoading(false);
   };
 
@@ -396,6 +435,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
     currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|1|${months}`;
     setClientForm({ ...clientForm, subscriptions: currentSubs });
+  };
+
+  const handleResetProjection = () => {
+      if (!isConfirmingReset) {
+          setIsConfirmingReset(true);
+          setTimeout(() => setIsConfirmingReset(false), 4000);
+      } else {
+          setProjectionMonths(1);
+          setStatsReferenceDate(Date.now()); 
+          setIsConfirmingReset(false);
+      }
   };
 
   const sendWhatsAppMessage = (phone: string, name: string, service: string, expiryDate: Date) => {
@@ -447,15 +497,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                           <Search className="text-indigo-400" size={24} />
                           <input className="bg-transparent outline-none text-base font-bold w-full" placeholder="Buscar por nome ou WhatsApp..." value={clientSearch} onChange={e => setClientSearch(e.target.value)} />
                       </div>
-                      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
-                          {[
-                              {id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white'},
-                              {id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700'},
-                              {id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700'},
-                              {id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700'}
-                          ].map(f => (
-                              <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
-                          ))}
+                      <div className="flex flex-wrap gap-2 items-center">
+                          <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide flex-1">
+                              {[
+                                  {id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white'},
+                                  {id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700'},
+                                  {id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700'},
+                                  {id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700'},
+                                  {id: 'deleted', label: 'Excluídos', color: 'bg-gray-400 text-white'}
+                              ].map(f => (
+                                  <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
+                              ))}
+                          </div>
+                          
+                          <button 
+                            onClick={() => setClientSortByExpiry(!clientSortByExpiry)}
+                            className={`p-2.5 rounded-xl border flex items-center gap-2 text-[10px] font-black uppercase transition-all ${clientSortByExpiry ? 'bg-amber-100 text-amber-700 border-amber-200' : 'bg-white dark:bg-slate-900 text-indigo-400 border-indigo-100'}`}
+                            title="Ordenar por Vencimento Próximo"
+                          >
+                            <ArrowUpDown size={14} /> <span className="hidden sm:inline">Vencimento</span>
+                          </button>
                       </div>
                       <button onClick={() => { setClientForm({ phone_number: '', client_name: '', subscriptions: [], client_password: '' }); setClientModalOpen(true); }} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-100">
                           <Plus size={24}/> Novo Cliente
@@ -464,15 +525,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {filteredClients.map((client) => (
-                          <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 dark:border-slate-800 flex flex-col hover:border-indigo-200 transition-all">
+                          <div key={client.id} className={`bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border flex flex-col hover:border-indigo-200 transition-all ${client.deleted ? 'border-gray-200 opacity-75' : 'border-indigo-50'}`}>
                               <div className="flex justify-between items-start mb-4">
                                   <div className="min-w-0">
-                                      <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
+                                      <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'} {client.deleted && <span className="text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full ml-1 uppercase">Excluído</span>}</h3>
                                       <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12}/> {client.phone_number}</p>
                                   </div>
                                   <div className="flex gap-2">
-                                      <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18}/></button>
-                                      <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18}/></button>
+                                      {client.deleted ? (
+                                          <div className="flex gap-2">
+                                              <button onClick={() => handleRestoreClient(client)} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all" title="Restaurar"><Undo2 size={18}/></button>
+                                              <button onClick={() => handlePermanentDelete(client.id, client.phone_number)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all" title="Excluir Permanentemente"><Trash2 size={18}/></button>
+                                          </div>
+                                      ) : (
+                                          <>
+                                              <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18}/></button>
+                                              <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18}/></button>
+                                          </>
+                                      )}
                                   </div>
                               </div>
                               
@@ -491,12 +561,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                       <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
                                                       <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
                                                   </div>
-                                                  <div className="flex gap-1.5">
-                                                      <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
-                                                      {!isCharged && <button onClick={() => handleMarkAsChargedQuick(client, i)} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
-                                                  </div>
+                                                  {!client.deleted && (
+                                                      <div className="flex gap-1.5">
+                                                          <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
+                                                          {!isCharged && <button onClick={() => { setClientForm({...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s)}); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
+                                                      </div>
+                                                  )}
                                               </div>
-                                              <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                              {!client.deleted && (
+                                                  <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
+                                              )}
                                           </div>
                                       );
                                   })}
@@ -509,58 +583,106 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
           {activeTab === 'finances' && (
               <div className="space-y-8 animate-fade-in pb-32">
-                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                      <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm">
-                          <div className="bg-emerald-50 dark:bg-emerald-900/20 p-3 rounded-2xl w-fit mb-4"><DollarSign className="text-emerald-600" size={24}/></div>
-                          <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Faturamento Bruto</p>
-                          <h4 className="text-2xl font-black text-gray-900 dark:text-white">R$ {financeStats.grossRevenue.toFixed(2).replace('.', ',')}</h4>
+                  <div className="space-y-4">
+                      <div className="flex flex-col gap-1 px-4">
+                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Relatório de Fluxo de Caixa</h3>
+                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Balanço total da base ativa</p>
                       </div>
-                      <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm">
-                          <div className="bg-indigo-50 dark:bg-indigo-900/20 p-3 rounded-2xl w-fit mb-4"><TrendingUp className="text-indigo-600" size={24}/></div>
-                          <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Saldo de Crescimento</p>
-                          <h4 className="text-2xl font-black text-gray-900 dark:text-white flex items-center gap-2">+{financeStats.newClientsThisMonth} <span className="text-xs font-bold text-emerald-500 bg-emerald-50 px-2 py-1 rounded-lg">Mês Atual</span></h4>
-                      </div>
-                      <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm">
-                          <div className="bg-amber-50 dark:bg-amber-900/20 p-3 rounded-2xl w-fit mb-4"><Wallet className="text-amber-600" size={24}/></div>
-                          <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Ticket Médio</p>
-                          <h4 className="text-2xl font-black text-gray-900 dark:text-white">R$ {financeStats.averageTicket.toFixed(2).replace('.', ',')}</h4>
-                      </div>
-                      <div className="bg-white dark:bg-slate-900 p-6 rounded-[2rem] border border-indigo-100 dark:border-slate-800 shadow-sm">
-                          <div className="bg-purple-50 dark:bg-purple-900/20 p-3 rounded-2xl w-fit mb-4"><RotateCw className="text-purple-600" size={24}/></div>
-                          <p className="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Projeção Próximo Mês</p>
-                          <h4 className="text-2xl font-black text-purple-600">R$ {financeStats.nextMonthProjection.toFixed(2).replace('.', ',')}</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[2.5rem] shadow-xl relative overflow-hidden group">
+                              <div className="absolute -right-4 -top-4 opacity-10 group-hover:rotate-12 transition-transform"><Banknote size={120} className="text-white"/></div>
+                              <p className="text-[10px] font-black text-white/60 uppercase tracking-widest">Faturamento Recebido Total</p>
+                              <h4 className="text-4xl font-black text-white mt-1">R$ {financeStats.grossRevenue.toFixed(2).replace('.', ',')}</h4>
+                              <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-100">
+                                  <CheckCircle2 size={14}/> <span>Soma de todas as assinaturas ativas</span>
+                              </div>
+                          </div>
+                          
+                          <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-orange-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
+                               <div className="absolute -right-4 -top-4 opacity-5 group-hover:rotate-12 transition-transform"><Clock size={120} className="text-orange-500" /></div>
+                              <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Saldo Pendente</p>
+                              <h4 className="text-4xl font-black text-orange-600 mt-1">R$ {financeStats.pendingRevenue.toFixed(2).replace('.', ',')}</h4>
+                              <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-orange-400">
+                                  <AlertTriangle size={14}/> <span>Apenas assinaturas vencidas</span>
+                              </div>
+                          </div>
                       </div>
                   </div>
 
                   <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-6">
                       <div className="flex flex-col gap-1">
                           <h3 className="text-xl font-black text-gray-900 dark:text-white">Detalhamento por Aplicativo</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise de volume e faturamento por plataforma</p>
+                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Métricas individuais por serviço</p>
                       </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-left border-separate border-spacing-y-2">
                             <thead>
                                 <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
-                                    <th className="px-4 py-2">Plataforma</th>
-                                    <th className="px-4 py-2">Assinaturas Pagas</th>
-                                    <th className="px-4 py-2">Planos Longos (>1M)</th>
-                                    <th className="px-4 py-2 text-right">Faturamento Bruto</th>
+                                    <th className="px-4 py-2">Serviço</th>
+                                    <th className="px-4 py-2">Assinantes</th>
+                                    <th className="px-4 py-2">Longa Duração</th>
+                                    <th className="px-4 py-2 text-right">Vencido (Pendente)</th>
+                                    <th className="px-4 py-2 text-right">Total Ativo</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {Object.entries(financeStats.serviceBreakdown).map(([name, data]) => {
-                                    const sData = data as { count: number; revenue: number; longTerm: number };
-                                    return (
-                                        <tr key={name} className="group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
-                                            <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
-                                            <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50 font-bold text-sm">{sData.count}</td>
-                                            <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="px-2.5 py-1 rounded-lg text-[9px] font-black uppercase border bg-indigo-50 text-indigo-700 border-indigo-100">{sData.longTerm} Promo</span></td>
-                                            <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right font-black text-emerald-600">R$ {sData.revenue.toFixed(2).replace('.', ',')}</td>
-                                        </tr>
-                                    );
-                                })}
+                                {Object.entries(financeStats.serviceBreakdown).map(([name, data]: [string, any]) => (
+                                    <tr key={name} className="group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
+                                        <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
+                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-indigo-600">{data.count}</span></td>
+                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-purple-600">{data.longTermCount}</span></td>
+                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50 text-right font-bold text-orange-400 italic text-xs">R$ {data.pending.toFixed(2).replace('.', ',')}</td>
+                                        <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right font-black text-indigo-600">R$ {data.revenue.toFixed(2).replace('.', ',')}</td>
+                                    </tr>
+                                ))}
                             </tbody>
                         </table>
+                      </div>
+                  </div>
+
+                  <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-8">
+                      <div className="flex justify-between items-center">
+                          <div className="flex flex-col gap-1">
+                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção e Escala</h3>
+                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise de Churn vs Growth</p>
+                          </div>
+                          <button 
+                            onClick={handleResetProjection}
+                            className={`flex items-center gap-2 px-6 py-4 rounded-full text-[10px] font-black uppercase transition-all shadow-md border-2 ${isConfirmingReset ? 'bg-red-600 text-white border-red-700 animate-pulse' : 'bg-red-50 text-red-600 border-red-100 hover:bg-red-100 active:scale-95'}`}
+                          >
+                              {isConfirmingReset ? <AlertTriangle size={16} /> : <Eraser size={16} />}
+                              {isConfirmingReset ? "CONFIRMAR?" : "RESETAR PROJEÇÃO"}
+                          </button>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                          <div className="space-y-6">
+                              <div className="flex items-center justify-between p-5 bg-emerald-50 dark:bg-emerald-900/20 rounded-2xl border border-emerald-100">
+                                  <div className="flex items-center gap-4">
+                                      <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-emerald-600"><Users size={24}/></div>
+                                      <div><p className="text-[10px] font-black uppercase text-emerald-700">Novas Assinaturas (Mês)</p><h5 className="text-xl font-black text-emerald-900 dark:text-emerald-100">+{financeStats.newClientsThisMonth} Growth</h5></div>
+                                  </div>
+                                  <div className="text-emerald-600"><TrendingUp size={28}/></div>
+                              </div>
+                              <div className="flex items-center justify-between p-5 bg-red-50 dark:bg-red-900/20 rounded-2xl border border-red-100">
+                                  <div className="flex items-center gap-4">
+                                      <div className="p-3 bg-white dark:bg-slate-800 rounded-xl shadow-sm text-red-600"><UsersRound size={24}/></div>
+                                      <div><p className="text-[10px] font-black uppercase text-red-700">Cancelamentos / Churn</p><h5 className="text-xl font-black text-red-900 dark:text-red-100">-{financeStats.churnCount} Clientes</h5></div>
+                                  </div>
+                                  <div className="text-red-600 text-xs font-black uppercase">{financeStats.churnRate.toFixed(1)}% Taxa</div>
+                              </div>
+                          </div>
+
+                          <div className="bg-indigo-50 dark:bg-slate-800 p-8 rounded-3xl border border-indigo-100 flex flex-col justify-center text-center space-y-4">
+                              <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Estimativa de Faturamento ({projectionMonths} {projectionMonths === 1 ? 'mês' : 'meses'})</p>
+                              <h4 className="text-4xl font-black text-indigo-900 dark:text-indigo-100">R$ {financeStats.projection.toFixed(2).replace('.', ',')}</h4>
+                              <p className="text-xs text-indigo-400 font-bold max-w-[200px] mx-auto">Com base no ticket médio de R$ {financeStats.averageTicket.toFixed(2)} e saldo líquido de crescimento.</p>
+                              <div className="pt-4 flex justify-center gap-2">
+                                  {[1, 3, 6, 12].map(m => (
+                                      <button key={m} onClick={() => setProjectionMonths(m)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${projectionMonths === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm border border-indigo-50'}`}>{m === 12 ? '1Y' : `${m}M`}</button>
+                                  ))}
+                              </div>
+                          </div>
                       </div>
                   </div>
               </div>
@@ -578,14 +700,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                       </div>
                   </div>
 
-                  {deletedClients.length === 0 ? (
+                  {deletedClientsList.length === 0 ? (
                       <div className="text-center py-20 bg-gray-50 dark:bg-slate-900 rounded-[2.5rem] border-2 border-dashed border-gray-200 dark:border-slate-800">
                           <Trash2 className="w-16 h-16 text-gray-200 dark:text-slate-800 mx-auto mb-4" />
                           <p className="text-gray-400 font-bold uppercase tracking-widest text-sm">Lixeira vazia</p>
                       </div>
                   ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          {deletedClients.map(client => (
+                          {deletedClientsList.map(client => (
                               <div key={client.id} className="bg-white dark:bg-slate-900 p-6 rounded-[2.5rem] border border-gray-200 dark:border-slate-800 opacity-80 hover:opacity-100 transition-all">
                                   <div className="flex justify-between items-start">
                                       <div>
@@ -594,7 +716,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                       </div>
                                       <div className="flex gap-2">
                                           <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all" title="Restaurar"><Undo2 size={18}/></button>
-                                          <button onClick={() => handlePermanentDelete(client.id)} className="p-2.5 bg-red-50 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all" title="Excluir Permanentemente"><Trash2 size={18}/></button>
+                                          <button onClick={() => handlePermanentDelete(client.id, client.phone_number)} className="p-2.5 bg-red-50 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all" title="Excluir Permanentemente"><Trash2 size={18}/></button>
                                       </div>
                                   </div>
                               </div>

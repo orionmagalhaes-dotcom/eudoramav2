@@ -13,7 +13,7 @@ const CREDENTIAL_LIMITS: Record<string, number> = {
     'default': 10
 };
 
-export const fetchCredentials = async (): Promise<AppCredential[]> => {
+export const fetchCredentials = async (retries = 3): Promise<AppCredential[]> => {
     try {
         const { data, error } = await supabase
             .from('credentials')
@@ -21,6 +21,11 @@ export const fetchCredentials = async (): Promise<AppCredential[]> => {
         
         if (error) {
             console.error("Erro ao buscar credenciais do Supabase:", error.message || error);
+            if (retries > 0) {
+                console.log(`Tentando novamente em 1 segundo... (${retries} restantes)`);
+                await new Promise(r => setTimeout(r, 1000));
+                return fetchCredentials(retries - 1);
+            }
             return [];
         }
         if (!data) return [];
@@ -34,7 +39,11 @@ export const fetchCredentials = async (): Promise<AppCredential[]> => {
             isVisible: row.is_visible
         }));
     } catch (e: any) {
-        console.error("Exceção ao buscar credenciais:", e.message || e);
+        console.error("Exceção ao buscar credenciais (TypeError provável):", e.message || e);
+        if (retries > 0 && e.message?.includes('fetch')) {
+             await new Promise(r => setTimeout(r, 1000));
+             return fetchCredentials(retries - 1);
+        }
         return [];
     }
 };
@@ -76,8 +85,6 @@ export const deleteCredential = async (id: string): Promise<boolean> => {
 };
 
 // --- ESTRATÉGIA DE DISTRIBUIÇÃO DINÂMICA (LOAD BALANCING) ---
-// Quando uma nova conta é criada, o 'serviceCreds.length' aumenta,
-// o que faz o cálculo 'userIndex % serviceCreds.length' realocar os usuários automaticamente.
 export const getAssignedCredential = async (user: User, serviceName: string, preloadedClients?: ClientDBRow[]): Promise<{ credential: AppCredential | null, alert: string | null, daysActive: number }> => {
   
   const credentialsList = await fetchCredentials();
@@ -133,7 +140,6 @@ const calculateHealth = (cred: AppCredential, serviceName: string) => {
   let alertMsg = null;
   const sName = serviceName.toLowerCase();
 
-  // Alertas de expiração temporal
   if (sName.includes('viki')) {
       if (daysPassed >= 14) alertMsg = "⚠️ Conta Expirada (14 Dias).";
   } 

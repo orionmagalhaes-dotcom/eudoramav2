@@ -1,3 +1,4 @@
+
 import { createClient } from '@supabase/supabase-js';
 import { User, ClientDBRow, Dorama, AdminUserDBRow, SubscriptionDetail } from '../types';
 
@@ -27,12 +28,24 @@ export const addLocalDorama = (phoneNumber: string, type: 'watching' | 'favorite
 
 // --- FUNÇÕES DE CLIENTE ---
 
-export const getAllClients = async (): Promise<ClientDBRow[]> => {
+export const getAllClients = async (retries = 2): Promise<ClientDBRow[]> => {
   try {
     const { data, error } = await supabase.from('clients').select('*');
-    if (error) return [];
+    if (error) {
+        if (retries > 0) {
+            await new Promise(r => setTimeout(r, 1000));
+            return getAllClients(retries - 1);
+        }
+        return [];
+    }
     return data as unknown as ClientDBRow[];
-  } catch (e) { return []; }
+  } catch (e: any) { 
+      if (retries > 0 && e.message?.includes('fetch')) {
+          await new Promise(r => setTimeout(r, 1000));
+          return getAllClients(retries - 1);
+      }
+      return []; 
+  }
 };
 
 export const checkUserStatus = async (lastFourDigits: string): Promise<{ 
@@ -149,6 +162,21 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
         }, 
         error: null 
     };
+};
+
+export const deleteClientPermanently = async (id: string, phone: string): Promise<{ success: boolean; msg: string }> => {
+  try {
+      // 1. Deleta histórico de doramas associados ao número
+      await supabase.from('doramas').delete().eq('phone_number', phone);
+      
+      // 2. Deleta o cliente principal
+      const { error } = await supabase.from('clients').delete().eq('id', id);
+      
+      if (error) throw error;
+      return { success: true, msg: "Cliente removido definitivamente." };
+  } catch (e: any) {
+      return { success: false, msg: e.message };
+  }
 };
 
 export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
