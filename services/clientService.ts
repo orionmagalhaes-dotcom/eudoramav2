@@ -166,16 +166,29 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 
 export const deleteClientPermanently = async (id: string, phone: string): Promise<{ success: boolean; msg: string }> => {
   try {
-      // 1. Deleta histórico de doramas associados ao número
-      await supabase.from('doramas').delete().eq('phone_number', phone);
+      // 1. Primeiro remove registros na tabela de doramas (chave estrangeira lógica)
+      const { error: doramaError } = await supabase
+          .from('doramas')
+          .delete()
+          .eq('phone_number', phone);
+
+      if (doramaError) console.warn("Aviso ao deletar doramas:", doramaError.message);
+
+      // 2. Agora deleta o cliente pelo ID
+      const { error: clientError } = await supabase
+          .from('clients')
+          .delete()
+          .eq('id', id);
       
-      // 2. Deleta o cliente principal
-      const { error } = await supabase.from('clients').delete().eq('id', id);
-      
-      if (error) throw error;
-      return { success: true, msg: "Cliente removido definitivamente." };
+      if (clientError) {
+          console.error("Erro Supabase ao deletar cliente:", clientError);
+          throw new Error(clientError.message);
+      }
+
+      return { success: true, msg: "Cliente removido com sucesso." };
   } catch (e: any) {
-      return { success: false, msg: e.message };
+      console.error("Exceção na exclusão:", e);
+      return { success: false, msg: e.message || "Erro desconhecido ao excluir." };
   }
 };
 

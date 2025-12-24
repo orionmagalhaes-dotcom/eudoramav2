@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { AppCredential, ClientDBRow, User } from '../types';
 import { fetchCredentials, saveCredential, deleteCredential } from '../services/credentialService';
-import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, deleteClientPermanently, supabase } from '../services/clientService';
+import { getAllClients, saveClientToDB, resetAllClientPasswords, hardDeleteAllClients, supabase } from '../services/clientService';
 import { 
     Plus, Trash2, Edit2, LogOut, Users, Search, AlertTriangle, X, ShieldAlert, Key, 
     Clock, CheckCircle2, RefreshCw, Phone, Mail, Lock, Loader2, Eye, EyeOff, 
@@ -121,7 +121,7 @@ const getCredentialHealth = (service: string, publishedAt: string, currentUsers:
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const [activeTab, setActiveTab] = useState<'clients' | 'credentials' | 'buscar_login' | 'danger' | 'finances' | 'trash'>('clients'); 
-  const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor' | 'deleted'>('all');
+  const [clientFilterStatus, setClientFilterStatus] = useState<'all' | 'charged' | 'expiring' | 'debtor'>('all');
   const [clientSortByExpiry, setClientSortByExpiry] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [credentials, setCredentials] = useState<AppCredential[]>([]);
@@ -269,7 +269,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   }, [credentials, credSortOrder]);
 
   const filteredClients = useMemo<ClientDBRow[]>(() => {
-    let list = clients.filter(c => clientFilterStatus === 'deleted' ? c.deleted : !c.deleted);
+    let list = clients.filter(c => !c.deleted);
     
     if (clientFilterStatus === 'debtor') {
         list = list.filter(c => {
@@ -353,10 +353,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const handleSaveClient = async () => {
     if (!clientForm.phone_number) return;
     setSavingClient(true);
-    const { success } = await saveClientToDB(clientForm);
+    const { success, msg } = await saveClientToDB(clientForm);
     if (success) {
       setClientModalOpen(false);
       loadData();
+    } else {
+        alert("Erro ao salvar: " + msg);
     }
     setSavingClient(false);
   };
@@ -364,30 +366,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const handleSoftDeleteClient = async (client: ClientDBRow) => {
       if (!confirm(`Mover ${client.client_name || client.phone_number} para a lixeira?`)) return;
       setLoading(true);
-      const { success } = await saveClientToDB({ ...client, deleted: true });
-      if (success) loadData();
+      const { success, msg } = await saveClientToDB({ ...client, deleted: true });
+      if (success) {
+          loadData();
+      } else {
+          alert("Erro ao mover para lixeira: " + msg + "\nCertifique-se de que aplicou o SQL de permissão de UPDATE no Supabase.");
+      }
       setLoading(false);
   };
 
   const handleRestoreClient = async (client: ClientDBRow) => {
       setLoading(true);
-      const { success } = await saveClientToDB({ ...client, deleted: false });
-      if (success) loadData();
-      setLoading(false);
-  };
-
-  const handlePermanentDelete = async (id: string, phone: string) => {
-      if (!confirm(`ATENÇÃO: Deseja apagar PERMANENTEMENTE o cliente do número ${phone} direto no banco? Esta ação não pode ser desfeita.`)) return;
-      
-      setLoading(true);
-      const { success, msg } = await deleteClientPermanently(id, phone);
-      
+      const { success, msg } = await saveClientToDB({ ...client, deleted: false });
       if (success) {
-          // Atualiza estado local removendo o item
-          setClients(prev => prev.filter(c => c.id !== id));
+          loadData();
       } else {
-          alert("Erro ao excluir no Supabase: " + msg);
-          loadData(); // Tenta recarregar para consistência
+          alert("Erro ao restaurar: " + msg);
       }
       setLoading(false);
   };
@@ -503,8 +497,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                   {id: 'all', label: 'Todos', color: 'bg-indigo-600 text-white'},
                                   {id: 'charged', label: 'Cobrados', color: 'bg-emerald-100 text-emerald-700'},
                                   {id: 'expiring', label: 'Vencendo', color: 'bg-orange-100 text-orange-700'},
-                                  {id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700'},
-                                  {id: 'deleted', label: 'Excluídos', color: 'bg-gray-400 text-white'}
+                                  {id: 'debtor', label: 'Pendentes', color: 'bg-red-100 text-red-700'}
                               ].map(f => (
                                   <button key={f.id} onClick={() => setClientFilterStatus(f.id as any)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase border transition-all whitespace-nowrap ${clientFilterStatus === f.id ? f.color : 'bg-white dark:bg-slate-900 text-indigo-300 border-indigo-100'}`}>{f.label}</button>
                               ))}
@@ -525,24 +518,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {filteredClients.map((client) => (
-                          <div key={client.id} className={`bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border flex flex-col hover:border-indigo-200 transition-all ${client.deleted ? 'border-gray-200 opacity-75' : 'border-indigo-50'}`}>
+                          <div key={client.id} className="bg-white dark:bg-slate-900 rounded-[2.5rem] p-6 shadow-sm border border-indigo-50 flex flex-col hover:border-indigo-200 transition-all">
                               <div className="flex justify-between items-start mb-4">
                                   <div className="min-w-0">
-                                      <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'} {client.deleted && <span className="text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full ml-1 uppercase">Excluído</span>}</h3>
+                                      <h3 className="font-black text-gray-900 dark:text-white text-lg truncate leading-tight">{client.client_name || 'Sem Nome'}</h3>
                                       <p className="text-xs font-bold text-indigo-400 mt-1 flex items-center gap-1.5"><Phone size={12}/> {client.phone_number}</p>
                                   </div>
                                   <div className="flex gap-2">
-                                      {client.deleted ? (
-                                          <div className="flex gap-2">
-                                              <button onClick={() => handleRestoreClient(client)} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all" title="Restaurar"><Undo2 size={18}/></button>
-                                              <button onClick={() => handlePermanentDelete(client.id, client.phone_number)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all" title="Excluir Permanentemente"><Trash2 size={18}/></button>
-                                          </div>
-                                      ) : (
-                                          <>
-                                              <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18}/></button>
-                                              <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18}/></button>
-                                          </>
-                                      )}
+                                      <button onClick={() => { setClientForm({ ...client, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months) }); setClientModalOpen(true); }} className="p-3 rounded-xl bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white transition-all"><Edit2 size={18}/></button>
+                                      <button onClick={() => handleSoftDeleteClient(client)} className="p-3 rounded-xl bg-red-50 text-red-600 hover:bg-red-600 hover:text-white transition-all"><Trash2 size={18}/></button>
                                   </div>
                               </div>
                               
@@ -561,16 +545,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                                       <span className="font-black text-xs uppercase tracking-wider">{serviceName}</span>
                                                       <span className="text-[10px] font-bold opacity-80">{daysLeft < 0 ? 'Vencido há ' + Math.abs(daysLeft) + 'd' : `Vence em ${expiry.toLocaleDateString()} (${daysLeft}d)`}</span>
                                                   </div>
-                                                  {!client.deleted && (
-                                                      <div className="flex gap-1.5">
-                                                          <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
-                                                          {!isCharged && <button onClick={() => { setClientForm({...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s)}); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
-                                                      </div>
-                                                  )}
+                                                  <div className="flex gap-1.5">
+                                                      <button onClick={() => sendWhatsAppMessage(client.phone_number, client.client_name || 'Dorameira', serviceName, expiry)} className="p-2.5 bg-white/50 hover:bg-emerald-500 hover:text-white rounded-xl transition-all"><MessageCircle size={16} className="text-emerald-600 hover:text-inherit" /></button>
+                                                      {!isCharged && <button onClick={() => { setClientForm({...clientForm, subscriptions: normalizeSubscriptions(client.subscriptions, client.duration_months).map((s, idx) => idx === i ? `${s.split('|')[0]}|${s.split('|')[1]}|1|${s.split('|')[3] || '1'}` : s)}); handleMarkAsChargedQuick(client, i); }} className="p-2.5 bg-white/50 text-indigo-600 border border-indigo-100 rounded-xl hover:bg-indigo-600 hover:text-white transition-all"><DollarSign size={16} /></button>}
+                                                  </div>
                                               </div>
-                                              {!client.deleted && (
-                                                  <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
-                                              )}
+                                              <button onClick={() => handleRenewSmart(client, i)} className="w-full py-2.5 bg-white/80 dark:bg-slate-800/80 hover:bg-indigo-600 hover:text-white rounded-xl text-[10px] font-black uppercase flex items-center justify-center gap-2 transition-all shadow-sm border border-white"><RotateCw size={14} /> Renovar +{parts[3] || '1'} Mês</button>
                                           </div>
                                       );
                                   })}
@@ -715,8 +695,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                                           <p className="text-xs font-bold text-gray-400">{client.phone_number}</p>
                                       </div>
                                       <div className="flex gap-2">
-                                          <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all" title="Restaurar"><Undo2 size={18}/></button>
-                                          <button onClick={() => handlePermanentDelete(client.id, client.phone_number)} className="p-2.5 bg-red-50 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all" title="Excluir Permanentemente"><Trash2 size={18}/></button>
+                                          <button onClick={() => handleRestoreClient(client)} className="p-2.5 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-black uppercase flex items-center gap-2" title="Restaurar"><Undo2 size={18}/> Restaurar</button>
                                       </div>
                                   </div>
                               </div>
@@ -768,9 +747,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
               <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-10 animate-fade-in text-center px-6">
                   <div className="bg-red-50 dark:bg-red-900/20 p-10 rounded-full animate-pulse"><Shield className="w-16 h-16 text-red-500" /></div>
                   <div className="w-full max-w-sm space-y-4 pb-32">
-                      <h2 className="text-2xl font-black text-red-600">Zona de Perigo</h2>
+                      <h2 className="text-2xl font-black text-red-600">Zona de Segurança</h2>
                       <button onClick={async () => { if(confirm("Deseja resetar todas as senhas de clientes?")) await resetAllClientPasswords(); loadData(); }} className="w-full bg-white dark:bg-slate-900 border-2 border-red-100 text-red-500 font-black py-5 rounded-2xl text-sm uppercase shadow-sm">Resetar Senhas Clientes</button>
-                      <button onClick={async () => { if(prompt("DIGITE 1202 PARA APAGAR TUDO") === "1202") await hardDeleteAllClients(); loadData(); }} className="w-full bg-red-600 text-white font-black py-5 rounded-2xl shadow-xl text-sm uppercase">Limpar Banco de Dados</button>
+                      <button onClick={async () => { if(prompt("DIGITE 1202 PARA LIMPAR") === "1202") await hardDeleteAllClients(); loadData(); }} className="w-full bg-red-600 text-white font-black py-5 rounded-2xl shadow-xl text-sm uppercase">Limpar Histórico e Contas</button>
+                      <p className="text-[10px] font-bold text-gray-400 uppercase mt-4">Nota: Clientes nunca são excluídos permanentemente para preservar o histórico.</p>
                   </div>
               </div>
           )}

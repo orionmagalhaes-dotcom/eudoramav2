@@ -36,24 +36,32 @@ export const getAllClients = async (): Promise<ClientDBRow[]> => {
 
 export const checkUserStatus = async (lastFourDigits: string): Promise<{ 
   exists: boolean; 
-  hasPassword: boolean; 
-  phoneMatches: string[] 
+  matches: { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }[] 
 }> => {
   try {
     const { data, error } = await supabase
       .from('clients')
-      .select('phone_number, client_password, deleted')
+      .select('phone_number, client_password, client_name, profile_image, deleted')
       .like('phone_number', `%${lastFourDigits}`);
 
-    if (error || !data || data.length === 0) return { exists: false, hasPassword: false, phoneMatches: [] };
+    if (error || !data || data.length === 0) return { exists: false, matches: [] };
 
     const activeClients = (data as any[]).filter(c => !c.deleted);
-    if (activeClients.length === 0) return { exists: false, hasPassword: false, phoneMatches: [] };
+    if (activeClients.length === 0) return { exists: false, matches: [] };
 
-    const hasPass = activeClients.some(row => row.client_password && row.client_password.trim() !== '');
-    const phones = Array.from(new Set(activeClients.map(d => d.phone_number as string)));
-    return { exists: true, hasPassword: hasPass, phoneMatches: phones };
-  } catch (e) { return { exists: false, hasPassword: false, phoneMatches: [] }; }
+    const matchesMap = new Map<string, { phoneNumber: string; hasPassword: boolean; name?: string; photo?: string }>();
+    activeClients.forEach(client => {
+        if (!matchesMap.has(client.phone_number)) {
+            matchesMap.set(client.phone_number, {
+                phoneNumber: client.phone_number,
+                hasPassword: !!(client.client_password && client.client_password.trim() !== ''),
+                name: client.client_name,
+                photo: client.profile_image
+            });
+        }
+    });
+    return { exists: true, matches: Array.from(matchesMap.values()) };
+  } catch (e) { return { exists: false, matches: [] }; }
 };
 
 export const loginWithPassword = async (phoneNumber: string, password: string): Promise<{ user: User | null, error: string | null }> => {
@@ -100,13 +108,11 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
               const individualDuration = (parts[3] && parts[3].trim() !== '') ? parseInt(parts[3]) : (row.duration_months || 1);
               
               allServices.add(cleanService);
-              
               subscriptionMap[cleanService] = {
                   purchaseDate: specificDate || row.purchase_date,
                   durationMonths: individualDuration,
                   isDebtor: !individualPaid 
               };
-              
               if (!individualPaid) isDebtorAny = true;
           }
       });
@@ -126,28 +132,150 @@ export const processUserLogin = (userRows: ClientDBRow[]): { user: User | null, 
 
     const combinedServices = Array.from(allServices);
     const localData = getLocalUserData(primaryPhone);
-    const gameProgress = bestRow.game_progress || {};
-
-    const appUser: User = {
-      id: bestRow.id,
-      name: bestRow.client_name || "Dorameira", 
-      phoneNumber: bestRow.phone_number,
-      purchaseDate: bestRow.purchase_date, 
-      durationMonths: bestRow.duration_months,
-      subscriptionDetails: subscriptionMap,
-      services: combinedServices,
-      isDebtor: isDebtorAny,
-      overrideExpiration: overrideAny,
-      watching: localData.watching || [],
-      favorites: localData.favorites || [],
-      completed: localData.completed || [],
-      gameProgress: gameProgress,
-      themeColor: bestRow.theme_color,
-      backgroundImage: bestRow.background_image,
-      profileImage: bestRow.profile_image
+    return { 
+        user: {
+            id: bestRow.id,
+            name: bestRow.client_name || "Dorameira", 
+            phoneNumber: bestRow.phone_number,
+            purchaseDate: bestRow.purchase_date, 
+            durationMonths: bestRow.duration_months,
+            subscriptionDetails: subscriptionMap,
+            services: combinedServices,
+            isDebtor: isDebtorAny,
+            overrideExpiration: overrideAny,
+            watching: localData.watching || [],
+            favorites: localData.favorites || [],
+            completed: localData.completed || [],
+            gameProgress: bestRow.game_progress || {},
+            themeColor: bestRow.theme_color,
+            backgroundImage: bestRow.background_image,
+            profileImage: bestRow.profile_image
+        }, 
+        error: null 
     };
+};
 
-    return { user: appUser, error: null };
+export const saveClientToDB = async (client: Partial<ClientDBRow>): Promise<{ success: boolean; msg: string }> => {
+    try {
+        const payload = { ...client };
+        if (!payload.id || payload.id === '') delete payload.id;
+        const { error } = await supabase.from('clients').upsert(payload);
+        if (error) throw error;
+        return { success: true, msg: "Salvo com sucesso!" };
+    } catch (e: any) { return { success: false, msg: e.message }; }
+};
+
+export const updateDoramaInDB = async (dorama: Dorama): Promise<boolean> => {
+    try {
+        const { error } = await supabase.from('doramas').update({
+            episodes_watched: dorama.episodesWatched,
+            total_episodes: dorama.totalEpisodes,
+            season: dorama.season,
+            rating: dorama.rating,
+            status: dorama.status
+        }).eq('id', dorama.id);
+        return !error;
+    } catch (e) { return false; }
+};
+
+export const registerClientPassword = async (phoneNumber: string, password: string): Promise<boolean> => {
+  try {
+    const { error } = await supabase.from('clients').update({ client_password: password }).eq('phone_number', phoneNumber);
+    return !error;
+  } catch (e) { return false; }
+};
+
+export const resetAllClientPasswords = async (): Promise<{success: boolean, msg: string}> => {
+    const { error } = await supabase.from('clients').update({ client_password: '' }).neq('id', '00000000-0000-0000-0000-000000000000');
+    return error ? { success: false, msg: error.message } : { success: true, msg: "Senhas resetadas." };
+};
+
+export const hardDeleteAllClients = async (): Promise<{success: boolean, msg: string}> => {
+    try {
+        // Limpa dados auxiliares mas MANTÉM a tabela de clientes intacta para evitar perdas
+        await supabase.from('doramas').delete().neq('id', '0');
+        await supabase.from('credentials').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        return { success: true, msg: "Dados auxiliares limpos. Clientes preservados." };
+    } catch (e: any) { return { success: false, msg: e.message }; }
+};
+
+export const refreshUserProfile = async (phoneNumber: string): Promise<{ user: User | null; error: string | null }> => {
+    try {
+        const { data, error } = await supabase.from('clients').select('*').eq('phone_number', phoneNumber);
+        if (error || !data || data.length === 0) return { user: null, error: 'Usuário não encontrado.' };
+        return processUserLogin(data as unknown as ClientDBRow[]);
+    } catch (e) { return { user: null, error: 'Erro de conexão.' }; }
+};
+
+export const updateClientName = async (phoneNumber: string, newName: string): Promise<boolean> => {
+    const { error } = await supabase.from('clients').update({ client_name: newName }).eq('phone_number', phoneNumber);
+    return !error;
+};
+
+export const updateClientPreferences = async (phoneNumber: string, preferences: any): Promise<boolean> => {
+    const { error } = await supabase.from('clients').update(preferences).eq('phone_number', phoneNumber);
+    return !error;
+};
+
+export const saveGameProgress = async (phoneNumber: string, gameId: string, progressData: any) => {
+    const { data } = await supabase.from('clients').select('game_progress').eq('phone_number', phoneNumber).single();
+    const current = data?.game_progress || {};
+    const updated = { ...current, [gameId]: progressData };
+    await supabase.from('clients').update({ game_progress: updated }).eq('phone_number', phoneNumber);
+};
+
+export const updateLastActive = async (phoneNumber: string): Promise<void> => {
+    await supabase.from('clients').update({ last_active_at: new Date().toISOString() }).eq('phone_number', phoneNumber);
+};
+
+export const addDoramaToDB = async (phoneNumber: string, listType: 'watching' | 'favorites' | 'completed', dorama: Dorama): Promise<Dorama | null> => {
+    try {
+        let status = 'Watching';
+        if (listType === 'favorites') status = 'Plan to Watch';
+        if (listType === 'completed') status = 'Completed';
+        const payload = {
+            phone_number: phoneNumber,
+            title: dorama.title,
+            genre: dorama.genre || 'Drama',
+            thumbnail: dorama.thumbnail || '',
+            status: status,
+            episodes_watched: dorama.episodesWatched || (status === 'Completed' ? dorama.totalEpisodes : 1),
+            total_episodes: dorama.totalEpisodes || 16,
+            season: dorama.season || 1,
+            rating: dorama.rating || 0
+        };
+        const { data, error } = await supabase.from('doramas').insert(payload).select().single();
+        if (error) return null;
+        return { ...dorama, id: data.id };
+    } catch (e) { return null; }
+};
+
+export const removeDoramaFromDB = async (doramaId: string): Promise<boolean> => {
+    const { error } = await supabase.from('doramas').delete().eq('id', doramaId);
+    return !error;
+};
+
+export const getUserDoramasFromDB = async (phoneNumber: string): Promise<{ watching: Dorama[], favorites: Dorama[], completed: Dorama[] }> => {
+    try {
+        const { data, error } = await supabase.from('doramas').select('*').eq('phone_number', phoneNumber);
+        if (error || !data) return { watching: [], favorites: [], completed: [] };
+        const map = (d: any): Dorama => ({
+            id: d.id,
+            title: d.title,
+            genre: d.genre || 'Drama',
+            thumbnail: d.thumbnail || '',
+            status: d.status,
+            episodesWatched: d.episodes_watched || 0,
+            totalEpisodes: d.total_episodes || 16,
+            season: d.season || 1,
+            rating: d.rating || 0
+        });
+        return {
+            watching: data.filter((d: any) => d.status === 'Watching').map(map),
+            favorites: data.filter((d: any) => d.status === 'Plan to Watch').map(map),
+            completed: data.filter((d: any) => d.status === 'Completed').map(map)
+        };
+    } catch (e) { return { watching: [], favorites: [], completed: [] }; }
 };
 
 export const verifyAdminLogin = async (login: string, pass: string): Promise<boolean> => {
@@ -156,4 +284,9 @@ export const verifyAdminLogin = async (login: string, pass: string): Promise<boo
     if (error || !data || data.length === 0) return false;
     return (data[0] as AdminUserDBRow).password === pass;
   } catch (e) { return false; }
+};
+
+export const updateAdminPassword = async (newPassword: string) => {
+    const { error } = await supabase.from('admin_users').upsert({ username: 'admin', password: newPassword }, { onConflict: 'username' });
+    return !error;
 };
