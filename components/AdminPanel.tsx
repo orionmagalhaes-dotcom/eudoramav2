@@ -173,21 +173,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   const financeStats = useMemo(() => {
     const activeClients = clients.filter(c => !c.deleted);
     const deletedClients = clients.filter(c => c.deleted);
-    const totalClients = activeClients.length;
     
     let grossRevenue = 0; 
     let pendingRevenue = 0; 
-    const serviceBreakdown: Record<string, { count: number, monthlyCount: number, longTermCount: number, revenue: number, pending: number }> = {};
+    const serviceBreakdown: Record<string, { count: number, monthlyCount: number, revenue: number, pending: number }> = {};
     
-    SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, longTermCount: 0, revenue: 0, pending: 0 });
+    SERVICES.forEach(s => serviceBreakdown[s] = { count: 0, monthlyCount: 0, revenue: 0, pending: 0 });
 
     activeClients.forEach(client => {
         const subs = normalizeSubscriptions(client.subscriptions, client.duration_months);
         subs.forEach(sub => {
             const parts = sub.split('|');
+            const duration = parseInt(parts[3] || '1');
+            
+            // CONTABILIZAR APENAS MENSAL (Duração = 1 mês)
+            if (duration !== 1) return;
+
             const sName = parts[0];
             const startDate = parts[1];
-            const duration = parseInt(parts[3] || '1');
             const price = getServicePrice(sName, duration);
             
             const expiry = calculateExpiry(startDate, duration);
@@ -197,8 +200,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                 grossRevenue += price;
                 serviceBreakdown[sName].revenue += price;
                 serviceBreakdown[sName].count++;
-                if (duration > 1) serviceBreakdown[sName].longTermCount++;
-                else serviceBreakdown[sName].monthlyCount++;
+                serviceBreakdown[sName].monthlyCount++;
                 if (daysLeft < 0) {
                     pendingRevenue += price;
                     serviceBreakdown[sName].pending += price;
@@ -207,17 +209,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
         });
     });
 
+    const totalClientsCounted = Object.values(serviceBreakdown).reduce((acc, curr) => acc + curr.count, 0);
+
     const newClientsSinceReset = activeClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
     const churnSinceReset = deletedClients.filter(c => new Date(c.created_at).getTime() > statsReferenceDate).length;
     
-    const churnRate = totalClients > 0 ? (churnSinceReset / (totalClients + churnSinceReset)) * 100 : 0;
-    const avgTicket = totalClients > 0 ? grossRevenue / totalClients : 0;
+    const churnRate = totalClientsCounted > 0 ? (churnSinceReset / (totalClientsCounted + churnSinceReset)) * 100 : 0;
+    const avgTicket = totalClientsCounted > 0 ? grossRevenue / totalClientsCounted : 0;
     const projection = grossRevenue + (newClientsSinceReset * avgTicket * projectionMonths);
 
     return {
         grossRevenue,
         pendingRevenue,
-        totalClients,
+        totalClients: totalClientsCounted,
         newClientsThisMonth: newClientsSinceReset,
         churnCount: churnSinceReset,
         churnRate,
@@ -565,25 +569,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
               <div className="space-y-8 animate-fade-in pb-32">
                   <div className="space-y-4">
                       <div className="flex flex-col gap-1 px-4">
-                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Relatório de Fluxo de Caixa</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Balanço total da base ativa</p>
+                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Relatório Financeiro (Apenas Mensais)</h3>
+                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Resumo exclusivo de assinaturas recorrentes de 1 mês</p>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                           <div className="bg-gradient-to-br from-indigo-600 to-purple-700 p-8 rounded-[2.5rem] shadow-xl relative overflow-hidden group">
                               <div className="absolute -right-4 -top-4 opacity-10 group-hover:rotate-12 transition-transform"><Banknote size={120} className="text-white"/></div>
-                              <p className="text-[10px] font-black text-white/60 uppercase tracking-widest">Faturamento Recebido Total</p>
+                              <p className="text-[10px] font-black text-white/60 uppercase tracking-widest">Faturamento Mensal Recebido</p>
                               <h4 className="text-4xl font-black text-white mt-1">R$ {financeStats.grossRevenue.toFixed(2).replace('.', ',')}</h4>
                               <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-indigo-100">
-                                  <CheckCircle2 size={14}/> <span>Soma de todas as assinaturas ativas</span>
+                                  <CheckCircle2 size={14}/> <span>Soma das assinaturas de 1 mês ativas</span>
                               </div>
                           </div>
                           
                           <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-orange-100 dark:border-slate-800 shadow-sm relative overflow-hidden group">
                                <div className="absolute -right-4 -top-4 opacity-5 group-hover:rotate-12 transition-transform"><Clock size={120} className="text-orange-500" /></div>
-                              <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Saldo Pendente</p>
+                              <p className="text-[10px] font-black text-orange-400 uppercase tracking-widest">Saldo Mensal Pendente</p>
                               <h4 className="text-4xl font-black text-orange-600 mt-1">R$ {financeStats.pendingRevenue.toFixed(2).replace('.', ',')}</h4>
                               <div className="mt-4 flex items-center gap-1.5 text-xs font-bold text-orange-400">
-                                  <AlertTriangle size={14}/> <span>Apenas assinaturas vencidas</span>
+                                  <AlertTriangle size={14}/> <span>Assinaturas mensais vencidas</span>
                               </div>
                           </div>
                       </div>
@@ -591,26 +595,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
 
                   <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-6">
                       <div className="flex flex-col gap-1">
-                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Detalhamento por Aplicativo</h3>
-                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Métricas individuais por serviço</p>
+                          <h3 className="text-xl font-black text-gray-900 dark:text-white">Detalhamento Mensal por App</h3>
+                          <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Métricas de assinaturas de 1 mês por serviço</p>
                       </div>
                       <div className="overflow-x-auto">
                         <table className="w-full text-left border-separate border-spacing-y-2">
                             <thead>
                                 <tr className="text-[10px] font-black uppercase text-indigo-300 tracking-widest">
                                     <th className="px-4 py-2">Serviço</th>
-                                    <th className="px-4 py-2">Assinantes</th>
-                                    <th className="px-4 py-2">Longa Duração</th>
-                                    <th className="px-4 py-2 text-right">Vencido (Pendente)</th>
-                                    <th className="px-4 py-2 text-right">Total Ativo</th>
+                                    <th className="px-4 py-2">Assinantes Mensais</th>
+                                    <th className="px-4 py-2 text-right">Vencido (Mensal)</th>
+                                    <th className="px-4 py-2 text-right">Total Mensal</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {Object.entries(financeStats.serviceBreakdown).map(([name, data]: [string, any]) => (
                                     <tr key={name} className="group hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
                                         <td className="px-4 py-4 rounded-l-2xl bg-gray-50 dark:bg-slate-800/50"><span className="font-black text-sm text-gray-800 dark:text-gray-200">{name}</span></td>
-                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-indigo-600">{data.count}</span></td>
-                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-purple-600">{data.longTermCount}</span></td>
+                                        <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50"><span className="font-bold text-sm text-indigo-600">{data.monthlyCount}</span></td>
                                         <td className="px-4 py-4 bg-gray-50 dark:bg-slate-800/50 text-right font-bold text-orange-400 italic text-xs">R$ {data.pending.toFixed(2).replace('.', ',')}</td>
                                         <td className="px-4 py-4 rounded-r-2xl bg-gray-50 dark:bg-slate-800/50 text-right font-black text-indigo-600">R$ {data.revenue.toFixed(2).replace('.', ',')}</td>
                                     </tr>
@@ -623,8 +625,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                   <div className="bg-white dark:bg-slate-900 p-8 rounded-[2.5rem] border border-indigo-100 dark:border-slate-800 shadow-sm space-y-8">
                       <div className="flex justify-between items-center">
                           <div className="flex flex-col gap-1">
-                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção e Escala</h3>
-                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise de Churn vs Growth</p>
+                              <h3 className="text-xl font-black text-gray-900 dark:text-white">Projeção Mensal e Escala</h3>
+                              <p className="text-xs font-bold text-indigo-400 uppercase tracking-widest">Análise baseada em assinaturas de 1 mês</p>
                           </div>
                           <button 
                             onClick={handleResetProjection}
@@ -654,9 +656,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
                           </div>
 
                           <div className="bg-indigo-50 dark:bg-slate-800 p-8 rounded-3xl border border-indigo-100 flex flex-col justify-center text-center space-y-4">
-                              <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Estimativa de Faturamento ({projectionMonths} {projectionMonths === 1 ? 'mês' : 'meses'})</p>
+                              <p className="text-xs font-black text-indigo-400 uppercase tracking-widest">Estimativa de Faturamento Mensal ({projectionMonths} {projectionMonths === 1 ? 'mês' : 'meses'})</p>
                               <h4 className="text-4xl font-black text-indigo-900 dark:text-indigo-100">R$ {financeStats.projection.toFixed(2).replace('.', ',')}</h4>
-                              <p className="text-xs text-indigo-400 font-bold max-w-[200px] mx-auto">Com base no ticket médio de R$ {financeStats.averageTicket.toFixed(2)} e saldo líquido de crescimento.</p>
+                              <p className="text-xs text-indigo-400 font-bold max-w-[200px] mx-auto">Cálculo baseado no ticket médio mensal de R$ {financeStats.averageTicket.toFixed(2)} e saldo líquido de crescimento.</p>
                               <div className="pt-4 flex justify-center gap-2">
                                   {[1, 3, 6, 12].map(m => (
                                       <button key={m} onClick={() => setProjectionMonths(m)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase transition-all ${projectionMonths === m ? 'bg-indigo-600 text-white' : 'bg-white text-indigo-600 shadow-sm border border-indigo-50'}`}>{m === 12 ? '1Y' : `${m}M`}</button>
