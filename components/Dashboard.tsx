@@ -118,7 +118,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onOpenCheckout, showPalette
   }, [validServices, user.phoneNumber, user.subscriptionDetails, user.isDebtor, user.name, user.purchaseDate, user.durationMonths, user.overrideExpiration, syncTrigger]);
 
   const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+    // CORREÇÃO: Remove espaços do texto antes de copiar
+    navigator.clipboard.writeText(text.trim());
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };

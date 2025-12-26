@@ -165,7 +165,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
   };
 
   const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text.trim());
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
@@ -416,7 +416,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const currentExpiry = calculateExpiry(oldStartDate, months);
     const today = new Date();
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|1|${months}`;
+    // CORREÇÃO: Status de cobrança volta para '0' ao renovar
+    subs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
     await saveClientToDB({ ...client, subscriptions: subs });
     loadData();
   };
@@ -431,7 +432,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onLogout }) => {
     const currentExpiry = calculateExpiry(oldStartDate, months);
     const today = new Date();
     const newStartDate = currentExpiry.getTime() < today.getTime() ? today : currentExpiry;
-    currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|1|${months}`;
+    // CORREÇÃO: Status de cobrança volta para '0' ao renovar no modal
+    currentSubs[subIndex] = `${serviceName}|${newStartDate.toISOString()}|0|${months}`;
     setClientForm({ ...clientForm, subscriptions: currentSubs });
   };
 

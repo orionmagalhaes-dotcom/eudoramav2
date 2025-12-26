@@ -107,7 +107,8 @@ const SupportChat: React.FC<SupportChatProps> = ({ user, initialStep = 'root', o
     };
 
     const handleCopy = (text: string) => {
-        navigator.clipboard.writeText(text);
+        // CORREÇÃO: Remove espaços do texto antes de copiar
+        navigator.clipboard.writeText(text.trim());
         setCopiedText(text);
         setTimeout(() => setCopiedText(null), 2000);
     };
